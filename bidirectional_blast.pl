@@ -10,7 +10,7 @@
 
 #These variables (in main) are used by printVersion()
 my $template_version_number = '1.33';
-my $software_version_number = '1.1';
+my $software_version_number = '1.2';
 
 ##
 ## Start Main
@@ -605,8 +605,9 @@ Buffalo, NY 14203
 rwleach\@ccr.buffalo.edu
 
 * WHAT IS THIS: This script takes a series of fasta files and blasts each one
-                against every other.  Blast result files are produced, as well
-                as a file of hit data.
+                against every other (including itself).  Blast result files are
+                produced whose names are a composite of blast subject.query.br,
+                as well as a text-based table of hit data.
 
 * INPUT FORMAT: Fasta file (default format: nucleotide - See -p in the usage
                 output to change to protein).
