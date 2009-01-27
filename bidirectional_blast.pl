@@ -10,7 +10,7 @@
 
 #These variables (in main) are used by printVersion()
 my $template_version_number = '1.33';
-my $software_version_number = '1.0';
+my $software_version_number = '1.1';
 
 ##
 ## Start Main
@@ -40,7 +40,7 @@ my $quiet         = 0;
 my $DEBUG         = 0;
 
 my $GetOptHash =
-  {'p|blast-program=s'  => \$program,                #OPTIONAL [blastn]
+  {'p|blast-program=s'  => \$program,                #OPTIONAL [blastp]
    'b|blast-params=s'   => \$blast_params,           #OPTIONAL [-v 20 -b 20
                                                      # -e 100 -F F]
    'parse-only!'        => \$parse_only,             #OPTIONAL [Off]
@@ -671,7 +671,7 @@ end_print
                                    redirection is acceptable.  Perl glob
                                    characters (e.g. '*') are acceptable inside
                                    quotes.
-     -p|--blast-program   OPTIONAL [blastn] (blastn,blastp,tblastn,...)  See
+     -p|--blast-program   OPTIONAL [blastp] (blastn,blastp,tblastn,...)  See
                                    usage of the blastall executable.
      -b|--blast-params    OPTIONAL [-v 20 -b 20 -e 100 -F F] Optional
                                    parameters to supply to the blastall
