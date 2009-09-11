@@ -10,7 +10,7 @@
 
 #These variables (in main) are used by printVersion()
 my $template_version_number = '1.33';
-my $software_version_number = '1.1';
+my $software_version_number = '1.2';
 
 ##
 ## Start Main
@@ -365,6 +365,13 @@ foreach my $input_file (@input_files)
 	    '] Input file done.  Time taken: [',
 	    scalar(markTime()),
 	    " Seconds].");
+
+    if(scalar(keys(%$hit_hash)) == 0)
+      {
+	error("No hits were parsed from input file: [$input_file].  ",
+	      "Skipping.");
+	next;
+      }
 
     #If there were indirect hits in the file
     #Go through the hit_hash
