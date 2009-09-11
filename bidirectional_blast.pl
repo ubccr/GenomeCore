@@ -10,7 +10,7 @@
 
 #These variables (in main) are used by printVersion()
 my $template_version_number = '1.33';
-my $software_version_number = '1.2';
+my $software_version_number = '1.3';
 
 ##
 ## Start Main
@@ -31,6 +31,7 @@ my $format_command      = 'formatdb';
 my $blast_params        = '-v 20 -b 20 -e 100 -F F';
 my $program             = 'blastp';
 my $parse_only          = 0;
+my $command_file        = '';
 
 #These variables (in main) are used by the following subroutines:
 #verbose, error, warning, debug, printVersion, getCommand and usage
@@ -48,6 +49,9 @@ my $GetOptHash =
 				     sglob($_[1]))}, #         supplied
    '<>'                 => sub {push(@input_files,   #REQUIRED unless -i is
 				     sglob($_[0]))}, #         supplied
+   'c|command-file=s'   => sub {$command_file =      #OPTIONAL [nothing]
+				  sglob($_[1])},
+   'e|blast-path=s'     => \$blast_command,          #OPTIONAL [blastall]
    'o|outfile-suffix=s' => \$outfile_suffix,         #OPTIONAL [undef]
    'f|force!'           => \$force,                  #OPTIONAL [Off]
    'v|verbose!'         => \$verbose,                #OPTIONAL [Off]
@@ -132,6 +136,18 @@ if(isStandardOutputToTerminal() && !defined($outfile_suffix))
   {verbose("NOTE: VerboseOverMe functionality has been altered to yield ",
 	   "clean STDOUT output.")}
 
+my $exe_check = `which $blast_command`;
+if($exe_check eq '')
+  {error("Blastall command not found: [$blast_command].")}
+
+if(-e $command_file && !$force)
+  {
+    error("The output command file: [$command_file] already exists.  ",
+	  "Use -f to force overwrite.  E.g.\n\t",
+	  getCommand(1),' --force');
+    exit(4);
+  }
+
 verbose("Run conditions: ",getCommand(1),"\n");
 
 #If output is going to STDOUT instead of output files with different extensions
@@ -146,6 +162,15 @@ my $check_file_names   = {};
 my $dupe_id_error      = 0;
 my $defline_hash       = {};
 my $blast_result_files = {};
+
+if($command_file ne '')
+  {
+    if(!open(COMMANDS,">$command_file"))
+      {
+	error("Unable to open command file [$command_file]: $!");
+	exit(5);
+      }
+  }
 
 foreach my $input_file (@input_files)
   {
@@ -176,19 +201,24 @@ foreach my $input_file (@input_files)
     elsif(!$parse_only)
       {
 	$command  = "$blast_command -i $input_file -d $input_file -p ";
-	$command .= "$program $blast_params -o $input_file.$file_name.br";
+	$command .= "$program $blast_params > $input_file.$file_name.br";
 	verbose($command,"\n");
-	`$command`;
-	if($?)
+	if($command_file ne '')
+	  {print COMMANDS ("$command\n")}
+	else
 	  {
-	    $error_flag = 1;
-	    error("Blast of [$input_file -> $input_file] failed with ",
-		  "message: [$!].  The command executed was: [$command].");
+	    `$command`;
+	    if($?)
+	      {
+		$error_flag = 1;
+		error("Blast of [$input_file -> $input_file] failed with ",
+		      "message: [$!].  The command executed was: [$command].");
+	      }
 	  }
       }
 
     #Make sure the file names are unique
-    my $file_name = $input_file;
+    $file_name = $input_file;
     $file_name =~ s/.*\///;
     $check_file_names->{$file_name}++;
 
@@ -284,14 +314,19 @@ while(GetNextCombo($combo_array,2,scalar(@input_files)))
     elsif(!$parse_only)
       {
 	$command  = "$blast_command -i $query_file -d $subject_file -p ";
-	$command .= "$program $blast_params -o $query_file.$file_name.br";
+	$command .= "$program $blast_params > $query_file.$file_name.br";
 	verbose($command,"\n");
-	`$command`;
-	if($?)
+	if($command_file ne '')
+	  {print COMMANDS ("$command\n")}
+	else
 	  {
-	    $error_flag = 1;
-	    error("Blast of [$query_file -> $subject_file] failed with ",
-		  "message: [$!].  The command executed was: [$command].");
+	    `$command`;
+	    if($?)
+	      {
+		$error_flag = 1;
+		error("Blast of [$query_file -> $subject_file] failed with ",
+		      "message: [$!].  The command executed was: [$command].");
+	      }
 	  }
       }
 
@@ -316,14 +351,19 @@ while(GetNextCombo($combo_array,2,scalar(@input_files)))
     elsif(!$parse_only)
       {
 	$command  = "$blast_command -i $query_file -d $subject_file -p ";
-	$command .= "$program $blast_params -o $query_file.$file_name.br";
+	$command .= "$program $blast_params > $query_file.$file_name.br";
 	verbose($command,"\n");
-	`$command`;
-	if($?)
+	if($command_file ne '')
+	  {print COMMANDS ("$command\n")}
+	else
 	  {
-	    $error_flag = 1;
-	    error("Blast of [$query_file -> $subject_file] failed with ",
-		  "message: [$!].  The command executed was: [$command].");
+	    `$command`;
+	    if($?)
+	      {
+		$error_flag = 1;
+		error("Blast of [$query_file -> $subject_file] failed with ",
+		      "message: [$!].  The command executed was: [$command].");
+	      }
 	  }
       }
   }
@@ -334,90 +374,103 @@ while(GetNextCombo($combo_array,2,scalar(@input_files)))
 
 #my $result_hash = {};
 
-foreach my $blast_result_file (keys(%$blast_result_files))
+if($command_file eq '')
   {
-    #Open the input file
-    if(!open(INPUT,$blast_result_file))
+    foreach my $blast_result_file (keys(%$blast_result_files))
       {
-	#Report an error and iterate if there was an error
-	error("Unable to open input file: [$blast_result_file]\n$!");
-	next;
-      }
-    else
-      {verboseOverMe("[$blast_result_file] Opened input file.")}
-
-    my($query_id,
-       $query_length,
-       $subject_id,
-       $subject_length,
-       $match_length,
-       $evalue,
-       $identity,
-       $last_added);
-    my $alignment_count = 0;
-    my $line_num = 0;
-
-    #For each line in the current input file
-    while(getLine(*INPUT))
-      {
-	$line_num++;
-	verboseOverMe("[$blast_result_file] Reading line: [$line_num].");
-
-	if(/Query=\s*(\S+)/)
+	#Open the input file
+	if(!open(INPUT,$blast_result_file))
 	  {
-	    if(defined($last_added) && !$last_added)
+	    #Report an error and iterate if there was an error
+	    error("Unable to open input file: [$blast_result_file]\n$!");
+	    next;
+	  }
+	else
+	  {verboseOverMe("[$blast_result_file] Opened input file.")}
+
+	my($query_id,
+	   $query_length,
+	   $subject_id,
+	   $subject_length,
+	   $match_length,
+	   $evalue,
+	   $identity,
+	   $last_added);
+	my $alignment_count = 0;
+	my $line_num = 0;
+
+	#For each line in the current input file
+	while(getLine(*INPUT))
+	  {
+	    $line_num++;
+	    verboseOverMe("[$blast_result_file] Reading line: [$line_num].");
+
+	    if(/Query=\s*(\S+)/)
 	      {
-		addResult($blast_result_files->{$blast_result_file}->[0],#Query
-			  $blast_result_files->{$blast_result_file}->[1],#Subje
-			  0,
+		if(defined($last_added) && !$last_added)
+		  {
+		    addResult($blast_result_files
+			      ->{$blast_result_file}->[0],#Query
+			      $blast_result_files
+			      ->{$blast_result_file}->[1],#Subject
+			      0,
+			      $query_id,
+			      $query_length,
+			      '',
+			      '',
+			      '',
+			      '',
+			      '');
+		  }
+		$query_id = $1;
+	      }
+	    elsif(/^\s+\(([\d,]+) letters\)\s*$/)
+	      {
+		$query_length = $1;
+		$query_length =~ s/,//g;
+	      }
+	    elsif(/^\s*>\s*(\S+)/)
+	      {
+		$subject_id = $1;
+		$alignment_count = 0;
+	      }
+	    elsif(/^\s+Length = ([\d,]+)\s*$/)
+	      {
+		$subject_length = $1;
+		$subject_length =~ s/,//g;
+	      }
+	    elsif(/Expect = ([^,\n]+)/)
+	      {
+		$evalue = $1;
+		$alignment_count++;
+	      }
+	    elsif(/^\s*Identities = [\d,]+\/([\d,]+) \((\d+)/)
+	      {
+		$match_length = $1;
+		$match_length =~ s/,//g;
+		$identity = $2;
+
+		addResult($blast_result_files
+			  ->{$blast_result_file}->[0], #Query
+			  $blast_result_files
+			  ->{$blast_result_file}->[1], #Subject
+			  $alignment_count,         #Number hit to this subject
 			  $query_id,
 			  $query_length,
-			  '',
-			  '',
-			  '',
-			  '',
-			  '');
+			  $subject_id,
+			  $subject_length,
+			  $match_length,
+			  $evalue,
+			  $identity);
 	      }
-	    $query_id = $1;
 	  }
-	elsif(/^\s+\((\d+) letters\)\s*$/)
-	  {$query_length = $1}
-	elsif(/^\s*>\s*(\S+)/)
-	  {
-	    $subject_id = $1;
-	    $alignment_count = 0;
-	  }
-	elsif(/^\s+Length = (\d+)\s*$/)
-	  {$subject_length = $1}
-	elsif(/Expect = (\S+)/)
-	  {
-	    $evalue = $1;
-	    $alignment_count++;
-	  }
-	elsif(/^\s*Identities = \d+\/(\d+) \((\d+)/)
-	  {
-	    $match_length = $1;
-	    $identity = $2;
 
-	    addResult(#$result_hash,               #The hash we'll be adding to
-		      $blast_result_files->{$blast_result_file}->[0], #Query
-		      $blast_result_files->{$blast_result_file}->[1], #Subject
-		      $alignment_count,            #Number hit to this subject
-		      $query_id,
-		      $query_length,
-		      $subject_id,
-		      $subject_length,
-		      $match_length,
-		      $evalue,
-		      $identity);
-	  }
+	close(INPUT);
+
+	verbose("[$blast_result_file] Input file done.  Time taken: [",
+		scalar(markTime()),
+		" Seconds].");
       }
-
-    close(INPUT);
-
-    verbose("[$blast_result_file] Input file done.  Time taken: [",
-	    scalar(markTime()),
-	    " Seconds].");
   }
 
 #Report the number of errors, warnings, and debugs
@@ -672,6 +725,18 @@ end_print
                                    redirection is acceptable.  Perl glob
                                    characters (e.g. '*') are acceptable inside
                                    quotes.
+     -c|--command-file    OPTIONAL [nothing] Supply a file name to this option
+                                   to output the blastall commands to a text
+                                   file that can be used to run the commands
+                                   on a cluster (e.g. via
+                                   qsub_command_wrapper.pl).  Supplying this
+                                   argument will cause the output hit table to
+                                   not be generated.  Run the script again
+                                   later using the --parse-only option to
+                                   generate the hit table.
+     -e|--blast-path      OPTIONAL [blastall] If blastall is not in your path,
+                                   supply the path to the blastall executable
+                                   with this option (e.g. /usr/bin/blastall).
      -p|--blast-program   OPTIONAL [blastp] (blastn,blastp,tblastn,...)  See
                                    usage of the blastall executable.
      -b|--blast-params    OPTIONAL [-v 20 -b 20 -e 100 -F F] Optional
