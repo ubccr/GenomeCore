@@ -10,7 +10,7 @@
 
 #These variables (in main) are used by printVersion()
 my $template_version_number = '1.33';
-my $software_version_number = '1.0';
+my $software_version_number = '1.1';
 
 ##
 ## Start Main
@@ -184,7 +184,11 @@ foreach my $input_file (@input_files)
 		     ($input_file eq '-' ? 'STDIN' : $input_file),
 		     "] Opened input file.")}
 
-    my $line_num = 0;
+    my $line_num             = 0;
+    my $num_length_warnings  = 0;
+    my $num_sim_warnings     = 0;
+    my $fragment_check       = {};
+    my $indirect_recip_check = {};
 
     #For each line in the current input file
     while(getLine(*INPUT))
@@ -195,19 +199,163 @@ foreach my $input_file (@input_files)
 		      "] Reading line: [$line_num].");
 
 	my($query_file,$subject_file,$query_id,$subject_id,$match_length_ratio,
-	   $evalue,$percent_identity);
+	   $evalue,$percent_identity,$link_id);
 	($query_file,$subject_file,$query_id,$subject_id,$match_length_ratio,
-	 $evalue,$percent_identity) = split(/ *\t */,$_);
+	 $evalue,$percent_identity,$link_id) = split(/ *\t */,$_);
+	$link_id = '' unless(defined($link_id));
+
+	#If the match length ratio was given as a percent instead of fractional
+	#value, convert it to a fraction.  This could fail if 2% was ever
+	#expected as a valid percent match length, but that's very unlikely to
+	#ever be desireable
+	if($match_length_ratio > 2)
+	  {
+	    $match_length_ratio /= 100;
+	    $num_length_warnings++;
+	  }
+
+	#If the percent similarity was given as a fractional value instead of a
+        #percent, convert it to a percent.  This could fail if 2% was ever
+	#expected as a valid percent match length, but that's very unlikely to
+	#ever be desireable
+	if($percent_identity < 2)
+	  {
+	    $percent_identity *= 100;
+	    $num_sim_warnings++;
+	  }
 
 	$evalue = '1' . $evalue if($evalue =~ /^e/i);
 
-	$hit_hash->{$query_file}->{$subject_file}->{$query_id}->{$subject_id} =
-	  {LENGTHRATIO => $match_length_ratio,
-	   EVALUE      => $evalue,
-	   IDENTITY    => $percent_identity}
-	    if($match_length_ratio >= $length_ratio_cutoff &&
-	       $evalue             <= $evalue_cutoff &&
-	       $percent_identity   >= $percent_identity_cutoff);
+	if(#This hit meets all the cutoffs AND
+	   $match_length_ratio >= $length_ratio_cutoff     &&
+	   $evalue             <= $evalue_cutoff           &&
+	   $percent_identity   >= $percent_identity_cutoff &&
+
+	   #This hit pair does not yet exist OR
+	   (!exists($hit_hash->{$query_file}) ||
+	    !exists($hit_hash->{$query_file}->{$subject_file}) ||
+	    !exists($hit_hash->{$query_file}->{$subject_file}->{$query_id}) ||
+	    !exists($hit_hash->{$query_file}->{$subject_file}->{$query_id}
+		    ->{$subject_id}) ||
+
+	    #This hit pair does exist AND
+	    (exists($hit_hash->{$query_file}->{$subject_file}->{$query_id}
+		    ->{$subject_id}) &&
+
+	     #It's a more-authentic hit OR
+	     (($hit_hash->{$query_file}->{$subject_file}->{$query_id}
+	       ->{$subject_id}->{LINKID} ne '' && $link_id eq '') ||
+
+	      #It's an authentic hit that is simply all-around better
+	      ($link_id eq '' &&
+	       $hit_hash->{$query_file}->{$subject_file}->{$query_id}
+	       ->{$subject_id}->{LENGTHRATIO} <= $match_length_ratio &&
+	       $hit_hash->{$query_file}->{$subject_file}->{$query_id}
+	       ->{$subject_id}->{EVALUE} >= $evalue &&
+	       $hit_hash->{$query_file}->{$subject_file}->{$query_id}
+	       ->{$subject_id}->{IDENTITY} <= $percent_identity)))))
+	   {
+	     $hit_hash->{$query_file}->{$subject_file}->{$query_id}
+	       ->{$subject_id} =
+		 {LENGTHRATIO => $match_length_ratio,
+		  EVALUE      => $evalue,
+		  IDENTITY    => $percent_identity,
+		  LINKID      => $link_id};
+	   }
+
+	#If this is an indirect link between two fragments (This assumes
+	#there's no more than 2 lines with the same combination of files and
+	#IDs)
+	if($link_id ne '')
+	  {
+	    #If the reciprocal has already been recorded
+	    if(exists($indirect_recip_check->{$subject_file}) &&
+	       exists($indirect_recip_check->{$subject_file}->{$query_file}) &&
+	       exists($indirect_recip_check->{$subject_file}->{$query_file}
+		      ->{$subject_id}) &&
+	       exists($indirect_recip_check->{$subject_file}->{$query_file}
+		      ->{$subject_id}->{$query_id}))
+	      {
+		#Delete it
+		delete($indirect_recip_check->{$subject_file}->{$query_file}
+		       ->{$subject_id}->{$query_id});
+		if(scalar(keys(%{$indirect_recip_check->{$subject_file}
+				   ->{$query_file}->{$subject_id}})) == 0)
+		  {
+		    delete($indirect_recip_check->{$subject_file}
+			   ->{$query_file}->{$subject_id});
+		    if(scalar(keys(%{$indirect_recip_check->{$subject_file}
+				       ->{$query_file}})) == 0)
+		      {
+			delete($indirect_recip_check->{$subject_file}
+			       ->{$query_file});
+			if(scalar(keys(%{$indirect_recip_check
+					   ->{$subject_file}})) == 0)
+			  {delete($indirect_recip_check->{$subject_file})}
+		      }
+		  }
+	      }
+	    else #Record it
+	      {$indirect_recip_check->{$query_file}->{$subject_file}
+		 ->{$query_id}->{$subject_id} = 0}
+	  }
+
+	#Check to see if this is a direct hit between two fragments that meets
+	#the length match ratio cutoff but not one or both of the others
+	if($match_length_ratio >= $length_ratio_cutoff    &&
+	   ($evalue > $evalue_cutoff ||
+	    $percent_identity < $percent_identity_cutoff) &&
+	   $link_id eq '')
+	  {
+	    #Keep this hit for later to check to see if it should trump an
+	    #indirect hit between the same two fragments
+	    $fragment_check->{$query_file}->{$subject_file}->{$query_id}
+	      ->{$subject_id} =
+		{LENGTHRATIO => $match_length_ratio,
+		 EVALUE      => $evalue,
+		 IDENTITY    => $percent_identity,
+		 LINKID      => $link_id};
+	  }
+      }
+
+    if($num_length_warnings)
+      {warning("It appears as though [$input_file] has $num_length_warnings ",
+	       'lines that have the match length ratio in percentage format ',
+	       'instead of in the expected fractional format.  The data has ',
+	       'been converted.')}
+    if($num_sim_warnings)
+      {warning("It appears as though [$input_file] has $num_sim_warnings ",
+	       'lines that have the percent similarity in fractional format ',
+	       'instead of in the expected percentage format.  The data has ',
+	       'been converted.')}
+
+    #Check to see that indirect hits were entered correctly (i.e. that
+    #bidirectional hits were entered)
+    if(keys(%$indirect_recip_check))
+      {
+	my $err_string = '';
+	foreach my $query_file (keys(%$indirect_recip_check))
+	  {foreach my $subject_file (keys(%{$indirect_recip_check
+					      ->{$query_file}}))
+	     {foreach my $query_id (keys(%{$indirect_recip_check
+					     ->{$query_file}
+					       ->{$subject_file}}))
+		{foreach my $subject_id (keys(%{$indirect_recip_check
+						  ->{$query_file}
+						    ->{$subject_file}
+						      ->{$query_id}}))
+		   {$err_string .= $indirect_recip_check->{$query_file}
+		      ->{$subject_file}->{$query_id}->{$subject_id}->{LINKID} .
+			','}}}}
+	$err_string =~ s/,$//;
+	error('It appears that 1 or more indirect hits to a reference set of ',
+	      "sequences was not entered into the input file: [$input_file] ",
+	      'in a bidirecdtional manner.  Either this script should be ',
+	      'updated to add the reciprocal hit automatically or you need ',
+	      'to include the reciprocal entries in your input file.  Here ',
+	      'are the indirect link IDs (from the last column of the input ',
+	      "data) without reciprocal hits: [$err_string].");
+	undef($indirect_recip_check);
       }
 
     close(INPUT);
@@ -217,6 +365,63 @@ foreach my $input_file (@input_files)
 	    '] Input file done.  Time taken: [',
 	    scalar(markTime()),
 	    " Seconds].");
+
+    #If there were indirect hits in the file
+    #Go through the hit_hash
+
+    #Go through the fragment_check hash to see if it should trump any indirect
+    #hits.  We are assuming here that the hits in this hash are bad for one
+    #reason or another, but that they meet the length match ratio requirement
+    foreach my $query_file (keys(%$fragment_check))
+      {
+	next unless(exists($hit_hash->{$query_file}));
+	foreach my $subject_file (keys(%{$fragment_check->{$query_file}}))
+	  {
+	    next unless(exists($hit_hash->{$query_file}->{$subject_file}));
+	    foreach my $query_id (keys(%{$fragment_check->{$query_file}
+					   ->{$subject_file}}))
+	      {
+		next unless(exists($hit_hash->{$query_file}->{$subject_file}
+				   ->{$query_id}));
+		foreach my $subject_id (keys(%{$fragment_check->{$query_file}
+						 ->{$subject_file}
+						   ->{$query_id}}))
+		  {
+		    next unless(exists($hit_hash->{$query_file}
+				       ->{$subject_file}->{$query_id}
+				       ->{$subject_id}));
+
+		    #If the recorded hit is an indirect one that hits a
+		    #reference sequence link
+		    if($fragment_check->{$query_file}->{$subject_file}
+		       ->{$query_id}->{$subject_id}->{LINKID} ne '')
+		      {
+			#Remove it from the hit hash
+			delete($hit_hash->{$query_file}->{$subject_file}
+				       ->{$query_id}->{$subject_id});
+			if(scalar(keys(%{$hit_hash->{$query_file}
+					   ->{$subject_file}->{$query_id}})) ==
+			   0)
+			  {
+			    delete($hit_hash->{$query_file}->{$subject_file}
+				   ->{$query_id});
+			    if(scalar(keys(%{$hit_hash->{$query_file}
+					       ->{$subject_file}})) == 0)
+			      {
+				delete($hit_hash->{$query_file}
+				       ->{$subject_file});
+				if(scalar(keys(%{$hit_hash->{$query_file}})) ==
+				   0)
+				  {delete($hit_hash->{$query_file})}
+			      }
+			  }
+		      }
+		  }
+	      }
+	  }
+      }
+
+    undef($fragment_check);
 
 #    #If an output file name suffix is set
 #    if(defined($outfile_suffix))
@@ -593,7 +798,28 @@ rwleach\@ccr.buffalo.edu
                 hit one another.
 
 * INPUT FORMAT: Generate input files using the standard output from
-                bidirectional_blast.pl.
+                bidirectional_blast.pl.  Optionally, an additional column may
+                be added to indicate that the association between the two
+                sequences was generated by a means other than by directly
+                blasting the pair together.  This is to be able to deal with
+                fragmentary data from a sequencer.  Each pool of fragments can
+                be blasted against a reference set of unique sequences (a
+                uniref cluster is recommended) and then fragments that hit the
+                same reference sequence can be put on the same line (twice -
+                reversing the order on the other to simulate a bidirectional
+                pair of hits).  In the last optional column, you can add the
+                reference sequence ID that they both hit.  It is also
+                recommended that you place the worst blast scores (evalue,
+                match length ratio, and percent similarity) of one of the hits
+                to the uniref sequence on each line.  You should also only
+                blast fragments to uniref that are of a minimum length that
+                will ensure a unique hit.  Note that results will be subject to
+                an undetermined degree of error introduced by an situation
+                where a fragment hits a reference sequence that is not actually
+                where the fragment belongs.  If the last column is empty, the
+                hit will be assumed to be the result of a direct blast between
+                fragments.  Note that this script will prefer a direct blast
+                result over an indirect blast result.
 
 * OUTPUT FORMAT: Multi-line formatted output like this:
 
