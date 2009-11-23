@@ -10,7 +10,7 @@
 
 #These variables (in main) are used by printVersion()
 my $template_version_number = '1.33';
-my $software_version_number = '1.2';
+my $software_version_number = '1.3';
 
 ##
 ## Start Main
@@ -20,8 +20,8 @@ use strict;
 use Getopt::Long;
 
 #Declare & initialize variables.  Provide default values here.
-my($outfile_suffix,$paralogs_suffix); #Not defined so a user can overwrite the
-                                      #input file
+my($outfile_suffix);#,$paralogs_suffix); #Not defined so a user can overwrite
+                                         #the input file
 my @input_files         = ();
 my $current_output_file = '';
 my $help                = 0;
@@ -46,7 +46,7 @@ my $GetOptHash =
 				     sglob($_[1]))}, #         supplied
    '<>'                 => sub {push(@input_files,   #REQUIRED unless -i is
 				     sglob($_[0]))}, #         supplied
-   'u|uniques-suffix=s' => \$paralogs_suffix,        #OPTIONAL [undef]
+#   'u|uniques-suffix=s' => \$paralogs_suffix,        #OPTIONAL [undef]
    'o|outfile-suffix=s' => \$outfile_suffix,         #OPTIONAL [undef]
    'f|force!'           => \$force,                  #OPTIONAL [Off]
    'v|verbose!'         => \$verbose,                #OPTIONAL [Off]
@@ -321,7 +321,9 @@ foreach my $input_file (@input_files)
     if($num_length_warnings)
       {warning("It appears as though [$input_file] has $num_length_warnings ",
 	       'lines that have the match length ratio in percentage format ',
-	       'instead of in the expected fractional format.  The data has ',
+	       'instead of in the expected fractional format.  This could be ',
+	       'due to indirect hit additions via a cluster database to ',
+	       'mitigate fragmentary starting data.  The data has ',
 	       'been converted.')}
     if($num_sim_warnings)
       {warning("It appears as though [$input_file] has $num_sim_warnings ",
@@ -442,9 +444,72 @@ foreach my $input_file (@input_files)
 #      }
 #  }
 
-    my $seed_query_genome = (keys(%$hit_hash))[0];
+    my $seed_query_genome   = (keys(%$hit_hash))[0];
     my $seed_subject_genome = (keys(%{$hit_hash->{$seed_query_genome}}))[0];
     my @seed_gene_set =
+      sort
+	{
+	  #Sort by ascending number of hits (to avoid low-quality hits causing
+	  #unique genes to get added to other groups), descending length,
+	  #descending sim, and ascending eval) so that we
+	  #can greedily select paralogous groups that are composed of unique
+	  #members.  If we did not do this, we might end up with duplicate IDs
+	  #in the group output (this sorting is actually part of a bug-fix for
+	  #that)
+#	  my $num_hits_a    = 0;
+#	  my $num_hits_b    = 0;
+	  my $max_len_rat_a = 0;
+	  my $max_len_rat_b = 0;
+	  my $max_pct_sim_a = 0;
+	  my $max_pct_sim_b = 0;
+	  my($min_eval_a,$min_eval_b);
+	  foreach my $subida (keys(%{$hit_hash->{$seed_query_genome}
+				       ->{$seed_subject_genome}->{$a}}))
+	    {
+#	      $num_hits_a++;
+	      $max_len_rat_a =
+		$hit_hash->{$seed_query_genome}->{$seed_subject_genome}->{$a}
+		  ->{$subida}->{LENGTHRATIO}
+		    if($hit_hash->{$seed_query_genome}->{$seed_subject_genome}
+		       ->{$a}->{$subida}->{LENGTHRATIO} > $max_len_rat_a);
+	      $max_pct_sim_a =
+		$hit_hash->{$seed_query_genome}->{$seed_subject_genome}->{$a}
+		  ->{$subida}->{IDENTITY}
+		    if($hit_hash->{$seed_query_genome}->{$seed_subject_genome}
+		       ->{$a}->{$subida}->{IDENTITY} > $max_pct_sim_a);
+	      $min_eval_a =
+		$hit_hash->{$seed_query_genome}->{$seed_subject_genome}->{$a}
+		  ->{$subida}->{EVALUE}
+		    if(!defined($min_eval_a) ||
+		       $hit_hash->{$seed_query_genome}->{$seed_subject_genome}
+		       ->{$a}->{$subida}->{EVALUE} < $max_pct_sim_a);
+	    }
+	  foreach my $subidb (keys(%{$hit_hash->{$seed_query_genome}
+				       ->{$seed_subject_genome}->{$b}}))
+	    {
+#	      $num_hits_b++;
+	      $max_len_rat_b =
+		$hit_hash->{$seed_query_genome}->{$seed_subject_genome}->{$b}
+		  ->{$subidb}->{LENGTHRATIO}
+		    if($hit_hash->{$seed_query_genome}->{$seed_subject_genome}
+		       ->{$b}->{$subidb}->{LENGTHRATIO} > $max_len_rat_b);
+	      $max_pct_sim_b =
+		$hit_hash->{$seed_query_genome}->{$seed_subject_genome}->{$b}
+		  ->{$subidb}->{IDENTITY}
+		    if($hit_hash->{$seed_query_genome}->{$seed_subject_genome}
+		       ->{$b}->{$subidb}->{IDENTITY} > $max_pct_sim_b);
+	      $min_eval_b =
+		$hit_hash->{$seed_query_genome}->{$seed_subject_genome}->{$b}
+		  ->{$subidb}->{EVALUE}
+		    if(!defined($min_eval_b) ||
+		       $hit_hash->{$seed_query_genome}->{$seed_subject_genome}
+		       ->{$b}->{$subidb}->{EVALUE} < $max_pct_sim_b);
+	    }
+#	  $num_hits_a <=> $num_hits_b ||
+	    $max_len_rat_b <=> $max_len_rat_a ||
+	      $max_pct_sim_b <=> $max_pct_sim_a ||
+		$min_eval_a <=> $min_eval_b
+	}
       keys(%{$hit_hash->{$seed_query_genome}->{$seed_subject_genome}});
     my $num_genomes = scalar(keys(%$hit_hash));
 
@@ -459,22 +524,136 @@ foreach my $input_file (@input_files)
 
     verbose("Building candidate set of common genes...");
 
+    ##
+    ##I just wrote the following code (which I have not tested) and some code above but I have decided to not implement it because: If I start artificially removing genes from groups that have the requisite hits to be in, I would be trying to mitigate poor quality blasting (e.g. short sequences or high e-value cut-off) in this script, which I don't think is a good idea.  A better idea is for the blasting to be done better.  This issue can be mitigated by making the filtering/clustering cutoffs more stringent.  So I'm going to comment out the code below and leave the error above about duplicates.  I'm also going to leave the sort I did above to greedily select paralogous sets.
+    ##
+
+#    #Create the sets of paralogs we're going to use.  We're doing this first to
+#    #be able to select the paralogous set a seed gene belongs to (by it's best
+#    #hit) if it ends up being put in multiuple groups.
+#    my @seed_paralogous_sets = ();
+#    foreach my $seed_query_gene (@seed_gene_set)
+#      {
+#	verboseOverMe("Trying seed gene: [$seed_query_gene].");
+#
+#	next if(exists($seen_hash->{$seed_query_gene}));
+#
+#	#Try to build a set
+#	my @paralogs = (grep {exists($hit_hash->{$seed_query_genome} #bidirect.
+#				     ->{$seed_query_genome}->{$_}    #check
+#				     ->{$seed_query_gene})}
+#			keys(%{$hit_hash->{$seed_query_genome}
+#				 ->{$seed_query_genome}->{$seed_query_gene}}));
+#
+#	my $index = scalar(@seed_paralogous_sets);
+#	push(@seed_paralogous_sets,[@paralogs]);
+#
+#	#Update the seen hash so we can skip them later
+#	foreach my $paralog (@paralogs)
+#	  {
+#	    if(exists($seen_hash->{$paralog}) &&
+#	       exists($seen_hash->{$paralog}->{$seed_query_gene}) &&
+#	       $seen_hash->{$paralog}->{$seed_query_gene}->{SCORE}
+#	       ->{LENGTHRATIO} >
+#	       $hit_hash->{$seed_query_genome}->{$seed_query_genome}
+#	       ->{$seed_query_gene}->{$paralog}->{LENGTHRATIO})
+#	      {
+#		warning("Multiple hits above the cutoff between the same two ",
+#			"genes.  Since the previous script in this pipeline ",
+#			"was supposed to merge these instances, you may want ",
+#			"to make your cutoffs more stringent or else allow ",
+#			"merging errors in the previous script.  Keeping the ",
+#			"best hit.  This could potentially cause us to miss ",
+#			"some bidirectional groups.")
+#		next;
+#	      }
+#	    #Record the location of the paralogous set this was put into
+#	    $seen_hash->{$paralog}->{$seed_query_gene}->{INDEX} = $index;
+#	    #Record the score hash of the hit that caused this to be added
+#	    $seen_hash->{$paralog}->{$seed_query_gene}->{SCORE} =
+#	      $hit_hash->{$seed_query_genome}->{$seed_query_genome}
+#		->{$seed_query_gene}->{$paralog};
+#	  }
+#      }
+#
+#    my $num_problems = scalar(grep {scalar(keys(%$_)) > 1} keys(%$seen_hash));
+#    if($num_problems)
+#      {
+#	error("Given the cutoffs you supplied, there appear to be [$num_problems] genes in the seed set that can belong to multiple paralogous sets because some genes which do not bidirectionally hit eachother, bidirectionally hit the same gene(s).  This suggests that you should make your hit cutoffs more stringent or that your blast results contain short hits (which cannot be filtered by this script - they must be filtered in previous steps).  This script will keep the best of such hits and remove duplicates from the other sets, but be mindful of the problem when interpretting the results.  Note that this problem is mitigated by the fact that the \%length match generated by the previous script in this pipeline calculates percentage by the shortest whole sequence length, not match length, and this work-around selects the largest \%length match to decide which paralogous set a get belongs to.");
+#      }
+#
+#    #Now if a gene was added to multiple paralogous sets, keep the one it hit
+#    #best and remove the rest
+#    foreach my $dupe_paralog (grep {scalar(keys(%$_)) > 1} keys(%$seen_hash))
+#      {
+#	#Determine the best scoring occurrence of this paralog in sets of
+#	#paralogs (except for a hit to self)
+#	my $best_one =
+#	  (sort {$seen_hash->{$dupe_paralog}->{$b}->{SCORE}->{LENGTHRATIO} <=>
+#		   $seen_hash->{$dupe_paralog}->{$a}->{SCORE}->{LENGTHRATIO} ||
+#		     $seen_hash->{$dupe_paralog}->{$b}->{SCORE}->{IDENTITY} <=>
+#		       $seen_hash->{$dupe_paralog}->{$a}->{SCORE}
+#			 ->{IDENTITY} ||
+#			   $seen_hash->{$dupe_paralog}->{$a}->{SCORE}
+#			     ->{EVALUE} <=>
+#			       $seen_hash->{$dupe_paralog}->{$b}->{SCORE}
+#				 ->{EVALUE}}
+#	   grep {$_ ne $dupe_paralog}
+#	   keys(%{$seen_hash->{$dupe_paralog}}))[0];
+#
+#	#Now remove this paralog from all sets of paralogs except the best one
+#	foreach my $seed_paralog_query (keys(%{$seen_hash->{$dupe_paralog}}))
+#	  {
+#	    next if($seed_paralog_query eq $best_one);
+#	    my $index = $seen_hash->{$dupe_paralog}->{$seed_paralog_query}
+#	      ->{INDEX};
+#	    $seed_paralogous_sets[$index] =
+#	      [grep {$_ ne $dupe_paralog} @{$seed_paralogous_sets[$index]}];
+#	  }
+#      }
+#
+#    #Now filter the paralogous sets for just those that actually contain
+#    #members
+#    @seed_paralogous_sets = grep {scalar(@$_)} @seed_paralogous_sets;
+#
+#    foreach my $tmp_paralogs (@seed_paralogous_sets)
+#      {
+#	my @paralogs = @$tmp_paralogs;
+
     foreach my $seed_query_gene (@seed_gene_set)
       {
 	verboseOverMe("Trying seed gene: [$seed_query_gene].");
 
-	next if(exists($seen_hash->{$seed_query_gene}));
+	next if(exists($seen_hash->{$seed_query_genome}->{$seed_query_gene}));
 
-	#Try to build a set
-	my @paralogs = (grep {exists($hit_hash->{$seed_query_genome} #bidirect.
-				     ->{$seed_query_genome}->{$_}    #check
-				     ->{$seed_query_gene})}
-			keys(%{$hit_hash->{$seed_query_genome}
-				 ->{$seed_query_genome}->{$seed_query_gene}}));
+	#Try to build a set (tparalogs = temporary paralogs set)
+	my @tparalogs = (grep {exists($hit_hash->{$seed_query_genome} #bidirect
+				      ->{$seed_query_genome}->{$_}    #check
+				      ->{$seed_query_gene})}
+			 keys(%{$hit_hash->{$seed_query_genome}
+				  ->{$seed_query_genome}
+				    ->{$seed_query_gene}}));
+
+	#Make sure all paralogs hit each other
+	my @paralogs = ($seed_query_gene);
+	foreach my $paralog1 (@paralogs)
+	  {
+	    next if($paralog1 eq $seed_query_gene);
+	    my $match_missing = 0;
+	    foreach my $paralog2 (@paralogs)
+	      {$match_missing = 1
+		 if(!exists($hit_hash->{$seed_query_genome}
+			    ->{$seed_query_genome}->{$paralog1}
+			    ->{$paralog2}) ||
+		    !exists($hit_hash->{$seed_query_genome}
+			    ->{$seed_query_genome}->{$paralog2}->{$paralog1}))}
+	    next if($match_missing);
+	    push(@paralogs,$paralog1);
+	  }
 
 	#Update the seen hash so we can skip them later
 	foreach my $paralog (@paralogs)
-	  {$seen_hash->{$paralog} = 1}
+	  {$seen_hash->{$seed_query_genome}->{$paralog}++}
 
 	#Keep a candidate array of arrays of genes which have been hit where
 	#the first member is the genome the genes are being added from
@@ -488,7 +667,7 @@ foreach my $input_file (@input_files)
 
 	#See if every subject genome has non-empty string keys for this query
 	#gene or its paralogs
-	my $all_hit = 1;
+	my $all_hit              = 1;
 	my $hit_a_subject_genome = 0;
 	foreach my $subject_genome (grep {$_ ne $seed_query_genome}
 				    keys(%{$hit_hash->{$seed_query_genome}}))
@@ -539,7 +718,11 @@ foreach my $input_file (@input_files)
 		last;
 	      }
 	    else
-	      {push(@{$common_candidates[-1]},keys(%$subject_genes_hash))}
+	      {
+		foreach my $sgene (keys(%$subject_genes_hash))
+		  {$seen_hash->{$subject_genome}->{$sgene}++}
+		push(@{$common_candidates[-1]},keys(%$subject_genes_hash));
+	      }
 	  }
 
 	#If the seed gene bidirectionally hits everything
@@ -554,6 +737,27 @@ foreach my $input_file (@input_files)
 		   "did not appear to hit itself bidirectionally.  It's ",
 		   "either short or there are a bunch of copies of it (thus ",
 		   "it dropped off the list of hits).")}
+      }
+
+    foreach my $sgenome (keys(%$seen_hash))
+      {
+	my $num_problems = scalar(grep {$seen_hash->{$sgenome}->{$_} > 1}
+				  keys(%{$seen_hash->{$sgenome}}));
+	if($num_problems)
+	  {
+	    error("There appear to be [$num_problems] genes in the genome ",
+		  "set for genome: [$sgenome] that can belong to multiple ",
+		  "paralogous sets because some genes which do not ",
+		  "bidirectionally hit each other hit the same gene.  ",
+		  "This suggests that you should make your hit cutoffs more ",
+		  "stringent or that your blast results contain short hits ",
+		  "(which cannot be filtered by this script - they must be ",
+		  "filtered in previous steps).  These are the genes ",
+		  "which you will find in multiple groups: [",
+		  join(',',grep {$seen_hash->{$sgenome}->{$_} > 1}
+		       keys(%{$seen_hash->{$sgenome}})),
+		  "].");
+	  }
       }
 
     verbose("Found ",scalar(@$common_groups),
@@ -585,75 +789,75 @@ foreach my $input_file (@input_files)
 
     verbose("Found $commons_found common genes.");
 
-    #Output paralogs if the paralogs suffix has been supplied
-    if(defined($paralogs_suffix) && $paralogs_suffix eq '')
-      {
-	error("The paralogs output file suffix must either not be supplied ",
-	      "(to not produce paralog files) or be a non-empty value.  You ",
-	      "supplied: [$paralogs_suffix], so paralogs will not be output.");
-      }
-    elsif(defined($paralogs_suffix) && $paralogs_suffix ne '')
-      {
-	foreach my $query_genome (keys(%$hit_hash))
-	  {
-	    #Skip genomes done from other input files (assuming the files all
-	    #share a common set of starting genomes)
-	    if(exists($genomes_done_hash->{$query_genome}))
-	      {next}
-	    else
-	      {$genomes_done_hash->{$query_genome} = 1}
-
-	    #Open the output paralog file
-	    my $outfile = $parent_dir . $query_genome . $paralogs_suffix;
-	    if(open(PARALOG,">$outfile"))
-	      {
-		verboseOverMe("[$outfile] Opened uniques output file.");
-		select(PARALOG);
-	      }
-	    else
-	      {
-		error("Unable to write to file: [$outfile].");
-		next;
-	      }
-
-	    #Get all the query genes
-	    my @gene_set = keys(%{$hit_hash->{$query_genome}
-				    ->{$query_genome}});
-	    my $seen_hash = {};
-
-	    #Go through each query gene
-	    foreach my $query_gene (@gene_set)
-	      {
-		#Skip paralogs already printed
-		next if(exists($seen_hash->{$query_gene}));
-
-		#Obtain bidirectional hit paralogs (including hits to self)
-		my @paralogs = (grep {exists($hit_hash->{$query_genome} #bidir.
-					     ->{$query_genome}->{$_}    #check
-					     ->{$query_gene})}
-				keys(%{$hit_hash->{$query_genome}
-					 ->{$query_genome}->{$query_gene}}));
-
-		#Update the seen hash so we can skip them later
-		foreach my $paralog (@paralogs)
-		  {$seen_hash->{$paralog} = 1}
-
-		if(scalar(@paralogs) == 0)
-		  {
-		    $seen_hash->{$query_gene} = 1;
-		    push(@paralogs,$query_gene);
-		  }
-
-		#Print the set of paralogs on one line (which may be a unique
-		#non-paralogous gene)
-		print(join("\t",@paralogs),"\n");
-	      }
-
-	    select(STDOUT);
-	    close(PARALOG);
-	    verbose("[$outfile] Output file done.");
-	  }
-      }
+#    #Output paralogs if the paralogs suffix has been supplied
+#    if(defined($paralogs_suffix) && $paralogs_suffix eq '')
+#      {
+#	error("The paralogs output file suffix must either not be supplied ",
+#	      "(to not produce paralog files) or be a non-empty value.  You ",
+#	      "supplied: [$paralogs_suffix], so paralogs will not be output.");
+#      }
+#    elsif(defined($paralogs_suffix) && $paralogs_suffix ne '')
+#      {
+#	foreach my $query_genome (keys(%$hit_hash))
+#	  {
+#	    #Skip genomes done from other input files (assuming the files all
+#	    #share a common set of starting genomes)
+#	    if(exists($genomes_done_hash->{$query_genome}))
+#	      {next}
+#	    else
+#	      {$genomes_done_hash->{$query_genome} = 1}
+#
+#	    #Open the output paralog file
+#	    my $outfile = $parent_dir . $query_genome . $paralogs_suffix;
+#	    if(open(PARALOG,">$outfile"))
+#	      {
+#		verboseOverMe("[$outfile] Opened uniques output file.");
+#		select(PARALOG);
+#	      }
+#	    else
+#	      {
+#		error("Unable to write to file: [$outfile].");
+#		next;
+#	      }
+#
+#	    #Get all the query genes
+#	    my @gene_set = keys(%{$hit_hash->{$query_genome}
+#				    ->{$query_genome}});
+#	    my $seen_hash = {};
+#
+#	    #Go through each query gene
+#	    foreach my $query_gene (@gene_set)
+#	      {
+#		#Skip paralogs already printed
+#		next if(exists($seen_hash->{$query_gene}));
+#
+#		#Obtain bidirectional hit paralogs (including hits to self)
+#		my @paralogs = (grep {exists($hit_hash->{$query_genome} #bidir.
+#					     ->{$query_genome}->{$_}    #check
+#					     ->{$query_gene})}
+#				keys(%{$hit_hash->{$query_genome}
+#					 ->{$query_genome}->{$query_gene}}));
+#
+#		#Update the seen hash so we can skip them later
+#		foreach my $paralog (@paralogs)
+#		  {$seen_hash->{$paralog} = 1}
+#
+#		if(scalar(@paralogs) == 0)
+#		  {
+#		    $seen_hash->{$query_gene} = 1;
+#		    push(@paralogs,$query_gene);
+#		  }
+#
+#		#Print the set of paralogs on one line (which may be a unique
+#		#non-paralogous gene)
+#		print(join("\t",@paralogs),"\n");
+#	      }
+#
+#	    select(STDOUT);
+#	    close(PARALOG);
+#	    verbose("[$outfile] Output file done.");
+#	  }
+#      }
 
     #If an output file name suffix is set
     if(defined($outfile_suffix))
@@ -804,6 +1008,23 @@ rwleach\@ccr.buffalo.edu
                 sets of "common genes" among all the blasted genomes which all
                 hit one another.
 
+                First, a seed genome is arbitrarily selected and the genes are
+                sorted into paralogous sets where each gene hits all other
+                genes.  The genes that each individual paraogous gene
+                bidirectionally hits in other genomes are gathered as a
+                candidate set of common genes.  If any genome lacks a
+                bidirectional hit, the paralogous seed set is discarded.  Then
+                each gene set from each genome is then queried for
+                bidirectional hits against at least one gene in all the other
+                sets.  Thus, if you consider each set of genes from a
+                particular genome to be a sinlge gene, then each output group
+                represents a fully bidirectional set of common genes.  Note,
+                it is possible that two hit genes in a non-seed genome could be
+                grouped in a set that do not hit each other bidirectionally,
+                however with stringent hit cutoffs, this should represent
+                negligible error in the number of groups output.  Errors are
+                output if a gene is found in multiple groups.
+
 * INPUT FORMAT: Generate input files using the standard output from
                 bidirectional_blast.pl.  Optionally, an additional column may
                 be added to indicate that the association between the two
@@ -839,22 +1060,23 @@ rwleach\@ccr.buffalo.edu
                  following it are from.  There will be multiple genes on a line
                  if the genome contains paralogs.
 
-* OUTPUT UNIQUES FORMAT: Each line contains a tab-delimited set of bi-
-                         directional paralogous gene ID's.  The number of lines
-                         is the number of unique genes.  Example:
-
-                           gene_id1
-                           gene_id2     gene_id3
-                           ...
-
-                         These output files are only generated if a uniques
-                         file suffix is supplied on the command line (-u).
-                         The file name will consist of the unique contents of
-                         the first column of the input blast table with the
-                         appended suffix.  (e.g. -u .unique yields
-                         genome1.uniques.)
-
 end_print
+#* OUTPUT UNIQUES FORMAT: Each line contains a tab-delimited set of bi-
+#                         directional paralogous gene ID's.  The number of lines
+#                         is the number of unique genes.  Example:
+#
+#                           gene_id1
+#                           gene_id2     gene_id3
+#                           ...
+#
+#                         These output files are only generated if a uniques
+#                         file suffix is supplied on the command line (-u).
+#                         The file name will consist of the unique contents of
+#                         the first column of the input blast table with the
+#                         appended suffix.  (e.g. -u .unique yields
+#                         genome1.uniques.)
+#
+#end_print
 
     return(0);
   }
@@ -909,10 +1131,6 @@ end_print
                                    order to be retained.  Inclusive.
      -p|--percent-        OPTIONAL [10] The minimum percent identity a blast
         identity-cutoff            hit must be to be retained.  Inclusive.
-     -u|--uniques-suffix  OPTIONAL [nothing] This suffix is added to genome
-                                   file names to output files containing all
-                                   the unique genes in each genome.  Paralogous
-                                   sets are reported on the same line.
      -o|--outfile-suffix  OPTIONAL [nothing] This suffix is added to the input
                                    file names to use as output files.
                                    Redirecting a file into this script will
@@ -936,6 +1154,10 @@ end_print
      --debug              OPTIONAL [Off] Debug mode.
 
 end_print
+#     -u|--uniques-suffix  OPTIONAL [nothing] This suffix is added to genome
+#                                   file names to output files containing all
+#                                   the unique genes in each genome.  Paralogous
+#                                   sets are reported on the same line.
       }
 
     return(0);
