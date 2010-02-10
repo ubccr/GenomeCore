@@ -9,8 +9,8 @@
 #Copyright 2007
 
 #These variables (in main) are used by printVersion()
-my $template_version_number = '1.33';
-my $software_version_number = '1.3';
+my $template_version_number = '1.34';
+my $software_version_number = '1.4';
 
 ##
 ## Start Main
@@ -30,6 +30,7 @@ my $force               = 0;
 my $evalue_cutoff       = 10**-30;
 my $length_ratio_cutoff = .9;
 my $percent_identity_cutoff = 10;
+my $use_reference           = 0;
 
 #These variables (in main) are used by the following subroutines:
 #verbose, error, warning, debug, printVersion, getCommand and usage
@@ -46,6 +47,7 @@ my $GetOptHash =
 				     sglob($_[1]))}, #         supplied
    '<>'                 => sub {push(@input_files,   #REQUIRED unless -i is
 				     sglob($_[0]))}, #         supplied
+   'b|fully-bidirectional!' => \$use_reference,      #OPTIONAL [Off]
 #   'u|uniques-suffix=s' => \$paralogs_suffix,        #OPTIONAL [undef]
    'o|outfile-suffix=s' => \$outfile_suffix,         #OPTIONAL [undef]
    'f|force!'           => \$force,                  #OPTIONAL [Off]
@@ -130,6 +132,8 @@ if(!$force && defined($outfile_suffix))
 if(isStandardOutputToTerminal() && !defined($outfile_suffix))
   {verbose("NOTE: VerboseOverMe functionality has been altered to yield clean STDOUT ",
 	   "output.")}
+
+$use_reference = !$use_reference;
 
 verbose("Run conditions: ",getCommand(1),"\n");
 
@@ -522,11 +526,18 @@ foreach my $input_file (@input_files)
 
     my $seen_hash = {};
 
-    verbose("Building candidate set of common genes...");
+    #A reference is arbitrarily chosen as the seed genome.  It's paralogs are
+    #gathered first and then all their hits are gathered to be bidirectional
+    #hits with the seed, then the non-seed group of genes are checked loosely
+    #to see if they, as a group, have one member that hits a gene from another
+    #gene in the other non-seed groups
+    if($use_reference)
+      {
+	verbose("Building candidate set of common genes...");
 
-    ##
-    ##I just wrote the following code (which I have not tested) and some code above but I have decided to not implement it because: If I start artificially removing genes from groups that have the requisite hits to be in, I would be trying to mitigate poor quality blasting (e.g. short sequences or high e-value cut-off) in this script, which I don't think is a good idea.  A better idea is for the blasting to be done better.  This issue can be mitigated by making the filtering/clustering cutoffs more stringent.  So I'm going to comment out the code below and leave the error above about duplicates.  I'm also going to leave the sort I did above to greedily select paralogous sets.
-    ##
+	##
+	##I just wrote the following code (which I have not tested) and some code above but I have decided to not implement it because: If I start artificially removing genes from groups that have the requisite hits to be in, I would be trying to mitigate poor quality blasting (e.g. short sequences or high e-value cut-off) in this script, which I don't think is a good idea.  A better idea is for the blasting to be done better.  This issue can be mitigated by making the filtering/clustering cutoffs more stringent.  So I'm going to comment out the code below and leave the error above about duplicates.  I'm also going to leave the sort I did above to greedily select paralogous sets.
+	##
 
 #    #Create the sets of paralogs we're going to use.  We're doing this first to
 #    #be able to select the paralogous set a seed gene belongs to (by it's best
@@ -620,81 +631,86 @@ foreach my $input_file (@input_files)
 #      {
 #	my @paralogs = @$tmp_paralogs;
 
-    foreach my $seed_query_gene (@seed_gene_set)
-      {
-	verboseOverMe("Trying seed gene: [$seed_query_gene].");
-
-	next if(exists($seen_hash->{$seed_query_genome}->{$seed_query_gene}));
-
-	#Try to build a set (tparalogs = temporary paralogs set)
-	my @tparalogs = (grep {exists($hit_hash->{$seed_query_genome} #bidirect
-				      ->{$seed_query_genome}->{$_}    #check
-				      ->{$seed_query_gene})}
-			 keys(%{$hit_hash->{$seed_query_genome}
-				  ->{$seed_query_genome}
-				    ->{$seed_query_gene}}));
-
-	#Make sure all paralogs hit each other
-	my @paralogs = ($seed_query_gene);
-	foreach my $paralog1 (@paralogs)
+	foreach my $seed_query_gene (@seed_gene_set)
 	  {
-	    next if($paralog1 eq $seed_query_gene);
-	    my $match_missing = 0;
-	    foreach my $paralog2 (@paralogs)
-	      {$match_missing = 1
-		 if(!exists($hit_hash->{$seed_query_genome}
-			    ->{$seed_query_genome}->{$paralog1}
-			    ->{$paralog2}) ||
-		    !exists($hit_hash->{$seed_query_genome}
-			    ->{$seed_query_genome}->{$paralog2}->{$paralog1}))}
-	    next if($match_missing);
-	    push(@paralogs,$paralog1);
-	  }
+	    verboseOverMe("Trying seed gene: [$seed_query_gene].");
 
-	#Update the seen hash so we can skip them later
-	foreach my $paralog (@paralogs)
-	  {$seen_hash->{$seed_query_genome}->{$paralog}++}
+	    next
+	      if(exists($seen_hash->{$seed_query_genome}->{$seed_query_gene}));
 
-	#Keep a candidate array of arrays of genes which have been hit where
-	#the first member is the genome the genes are being added from
-	my @common_candidates = ([$seed_query_genome,@paralogs]);
+	    #Try to build a set (tparalogs = temporary paralogs set)
+	    my @tparalogs = (grep {exists($hit_hash->{$seed_query_genome}#bidir
+					  ->{$seed_query_genome}->{$_}   #check
+					  ->{$seed_query_gene})}
+			     keys(%{$hit_hash->{$seed_query_genome}
+				      ->{$seed_query_genome}
+					->{$seed_query_gene}}));
 
-	#Skip this gene if it doesn't contain hits to all other genomes
-	if(($num_genomes - 1) >
-	   scalar(grep {$_ ne $seed_query_genome}
-		  keys(%{$hit_hash->{$seed_query_genome}})))
-	  {next}
-
-	#See if every subject genome has non-empty string keys for this query
-	#gene or its paralogs
-	my $all_hit              = 1;
-	my $hit_a_subject_genome = 0;
-	foreach my $subject_genome (grep {$_ ne $seed_query_genome}
-				    keys(%{$hit_hash->{$seed_query_genome}}))
-	  {
-	    $hit_a_subject_genome = 1;
-
-	    #See if there's a bidirectional hit from any query paralog to each
-	    #subject genome
-	    my $hit = 0;
-	    push(@common_candidates,[$subject_genome]);
-	    my $subject_genes_hash = {};
-	    foreach my $paralog (@paralogs)
+	    #Make sure all paralogs hit each other
+	    my @paralogs = ($seed_query_gene);
+	    foreach my $paralog1 (@paralogs)
 	      {
-		foreach my $hitk
-		  (grep {$_ ne ''}
-		   grep {exists($hit_hash->{$subject_genome} #bidirectional
-				->{$seed_query_genome}       #check
-				->{$_}->{$paralog})}
-		   keys(%{$hit_hash->{$seed_query_genome}
-			    ->{$subject_genome}->{$paralog}}))
-		  {$subject_genes_hash->{$hitk} = 1}
+		next if($paralog1 eq $seed_query_gene);
+		my $match_missing = 0;
+		foreach my $paralog2 (@paralogs)
+		  {$match_missing = 1
+		     if(!exists($hit_hash->{$seed_query_genome}
+				->{$seed_query_genome}->{$paralog1}
+				->{$paralog2}) ||
+			!exists($hit_hash->{$seed_query_genome}
+				->{$seed_query_genome}->{$paralog2}
+				->{$paralog1}))}
+		next if($match_missing);
+		push(@paralogs,$paralog1);
+	      }
 
-		#If the hits marked are good (assumes first one in the hash is
-		#sufficient), say that there is a hit to this subject genome
-		if(scalar(keys(%$subject_genes_hash)) &&
-		   (keys(%$subject_genes_hash))[0] =~ /\S/)
-		  {$hit = 1}
+	    #Update the seen hash so we can skip them later
+	    foreach my $paralog (@paralogs)
+	      {$seen_hash->{$seed_query_genome}->{$paralog}++}
+
+	    #Keep a candidate array of arrays of genes which have been hit
+	    #where the first member is the genome the genes are being added
+	    #from
+	    my @common_candidates = ([$seed_query_genome,@paralogs]);
+
+	    #Skip this gene if it doesn't contain hits to all other genomes
+	    if(($num_genomes - 1) >
+	       scalar(grep {$_ ne $seed_query_genome}
+		      keys(%{$hit_hash->{$seed_query_genome}})))
+	      {next}
+
+	    #See if every subject genome has non-empty string keys for this
+	    #query gene or its paralogs
+	    my $all_hit              = 1;
+	    my $hit_a_subject_genome = 0;
+	    foreach my $subject_genome (grep {$_ ne $seed_query_genome}
+					keys(%{$hit_hash
+						 ->{$seed_query_genome}}))
+	      {
+		$hit_a_subject_genome = 1;
+
+		#See if there's a bidirectional hit from any query paralog to
+		#each subject genome
+		my $hit = 0;
+		push(@common_candidates,[$subject_genome]);
+		my $subject_genes_hash = {};
+		foreach my $paralog (@paralogs)
+		  {
+		    foreach my $hitk
+		      (grep {$_ ne ''}
+		       grep {exists($hit_hash->{$subject_genome} #bidirectional
+				    ->{$seed_query_genome}       #check
+				    ->{$_}->{$paralog})}
+		       keys(%{$hit_hash->{$seed_query_genome}
+				->{$subject_genome}->{$paralog}}))
+			{$subject_genes_hash->{$hitk} = 1}
+
+		    #If the hits marked are good (assumes first one in the hash
+		    #is sufficient), say that there is a hit to this subject
+		    #genome
+		    if(scalar(keys(%$subject_genes_hash)) &&
+		       (keys(%$subject_genes_hash))[0] =~ /\S/)
+		      {$hit = 1}
 #The code below was leading to duplicate paralogs when multiple seeds were
 #hitting the same genes in the subject genomes, so I implemented the code above
 #and in the else below this loop to make the subject list of genes unique
@@ -708,86 +724,301 @@ foreach my $input_file (@input_files)
 #	    if(scalar(@{$common_candidates[-1]}) > 1 &&
 #	       $common_candidates[-1][1] =~ /\S/)
 #	      {$hit = 1}
+		  }
+
+		#If there was not a bidirectional hit to this subject genome,
+		#we can stop, because everything must hit everything
+		if(!$hit)
+		  {
+		    $all_hit = 0;
+		    last;
+		  }
+		else
+		  {
+		    foreach my $sgene (keys(%$subject_genes_hash))
+		      {$seen_hash->{$subject_genome}->{$sgene}++}
+		    push(@{$common_candidates[-1]},keys(%$subject_genes_hash));
+		  }
 	      }
 
-	    #If there was not a bidirectional hit to this subject genome, we
-	    #can stop, because everything must hit everything
-	    if(!$hit)
+	    #If the seed gene bidirectionally hits everything
+	    if($all_hit && $hit_a_subject_genome)
+	      {push(@$common_groups,[@common_candidates])}
+	    #Or if there's only one genome and we're gathering paralogous sets
+	    #to simulate a core-genome for comparison purposes
+	    elsif(scalar(keys(%$hit_hash)) == 1 && scalar(@paralogs))
+	      {push(@$common_groups,[@common_candidates])}
+	    elsif(scalar(keys(%$hit_hash)) == 1 && scalar(@paralogs) == 0)
+	      {warning("This gene in [$seed_query_genome]: ",
+		       "[$seed_query_gene] did not appear to hit itself ",
+		       "bidirectionally.  It's either short or there are a ",
+		       "bunch of copies of it (thus it dropped off the list ",
+		       "of hits).")}
+	  }
+
+	foreach my $sgenome (keys(%$seen_hash))
+	  {
+	    my $num_problems = scalar(grep {$seen_hash->{$sgenome}->{$_} > 1}
+				      keys(%{$seen_hash->{$sgenome}}));
+	    if($num_problems)
 	      {
-		$all_hit = 0;
-		last;
-	      }
-	    else
-	      {
-		foreach my $sgene (keys(%$subject_genes_hash))
-		  {$seen_hash->{$subject_genome}->{$sgene}++}
-		push(@{$common_candidates[-1]},keys(%$subject_genes_hash));
+		error("There appear to be [$num_problems] genes in the ",
+		      "genome set for genome: [$sgenome] that can belong to ",
+		      "multiple paralogous sets because some genes which do ",
+		      "not bidirectionally hit each other hit the same ",
+		      "gene.  This suggests that you should make your hit ",
+		      "cutoffs more stringent or that your blast results ",
+		      "contain short hits (which cannot be filtered by this ",
+		      "script - they must be filtered in previous steps).  ",
+		      "These are the genes which you will find in multiple ",
+		      "groups: [",
+		      join(',',grep {$seen_hash->{$sgenome}->{$_} > 1}
+			   keys(%{$seen_hash->{$sgenome}})),
+		      "].");
 	      }
 	  }
 
-	#If the seed gene bidirectionally hits everything
-	if($all_hit && $hit_a_subject_genome)
-	  {push(@$common_groups,[@common_candidates])}
-	#Or if there's only one genome and we're gathering paralogous sets to
-        #simulate a core-genome for comparison purposes
-	elsif(scalar(keys(%$hit_hash)) == 1 && scalar(@paralogs))
-	  {push(@$common_groups,[@common_candidates])}
-	elsif(scalar(keys(%$hit_hash)) == 1 && scalar(@paralogs) == 0)
-	  {warning("This gene in [$seed_query_genome]: [$seed_query_gene] ",
-		   "did not appear to hit itself bidirectionally.  It's ",
-		   "either short or there are a bunch of copies of it (thus ",
-		   "it dropped off the list of hits).")}
-      }
+	verbose("Found ",scalar(@$common_groups),
+		" candidate sets of common genes.  Validating...");
 
-    foreach my $sgenome (keys(%$seen_hash))
+	#Now make sure everything hits everything, accounting for paralogs
+	my $group_num     = 0;
+	my $commons_found = 0;
+	foreach my $common_group (@$common_groups)
+	  {
+	    $group_num++;
+	    my $all_bidirectional = 1;
+	    foreach my $genome (@$common_group)
+	      {
+		verboseOverMe("Evaluating genome [$genome->[0]] in group ",
+			      "[$group_num].");
+		if(!isGenomeBidirectional($genome,$common_group,$hit_hash))
+		  {
+		    $all_bidirectional = 0;
+		    last;
+		  }
+	      }
+	    if($all_bidirectional)
+	      {
+		$commons_found++;
+		outputGroup($common_group,$commons_found);
+	      }
+	  }
+
+	verbose("Found $commons_found common genes.");
+      }
+    else #Fully bidirectional
       {
-	my $num_problems = scalar(grep {$seen_hash->{$sgenome}->{$_} > 1}
-				  keys(%{$seen_hash->{$sgenome}}));
-	if($num_problems)
-	  {
-	    error("There appear to be [$num_problems] genes in the genome ",
-		  "set for genome: [$sgenome] that can belong to multiple ",
-		  "paralogous sets because some genes which do not ",
-		  "bidirectionally hit each other hit the same gene.  ",
-		  "This suggests that you should make your hit cutoffs more ",
-		  "stringent or that your blast results contain short hits ",
-		  "(which cannot be filtered by this script - they must be ",
-		  "filtered in previous steps).  These are the genes ",
-		  "which you will find in multiple groups: [",
-		  join(',',grep {$seen_hash->{$sgenome}->{$_} > 1}
-		       keys(%{$seen_hash->{$sgenome}})),
-		  "].");
-	  }
-      }
+	my $commons_found = 0;
 
-    verbose("Found ",scalar(@$common_groups),
-	    " candidate sets of common genes.  Validating...");
-
-    #Now make sure everything hits everything, accounting for paralogs
-    my $group_num     = 0;
-    my $commons_found = 0;
-    foreach my $common_group (@$common_groups)
-      {
-	$group_num++;
-	my $all_bidirectional = 1;
-	foreach my $genome (@$common_group)
+	#For each gene in the seed genome that had a hit to one of the other
+	#genomes
+	foreach my $seed_query_gene (@seed_gene_set)
 	  {
-	    verboseOverMe("Evaluating genome [$genome->[0]] in group ",
-			  "[$group_num].");
-	    if(!isGenomeBidirectional($genome,$common_group,$hit_hash))
+	    next if(exists($seen_hash->{$seed_query_gene}));
+
+	    my $genome_check = {$seed_query_genome => 1};
+
+	    #Create an array of all the bidirectional hits with the seed
+	    my $ordered_hits = {};
+	    foreach my $subject_genome (keys(%{$hit_hash
+						 ->{$seed_query_genome}}))
 	      {
-		$all_bidirectional = 0;
-		last;
+		foreach my $subject_gene
+		  (keys(%{$hit_hash->{$seed_query_genome}->{$subject_genome}
+			    ->{$seed_query_gene}}))
+		    {
+
+		      if(#If it's not a hit to self
+			 ($seed_query_genome ne $subject_genome ||
+			  ($seed_query_genome eq $subject_genome &&
+			   $seed_query_gene ne $subject_gene)) &&
+			 #And the reciprocal hit exists (above cutoffs is
+			 #implied by the fact it exists)
+			 exists($hit_hash->{$subject_genome}
+				->{$seed_query_genome}->{$subject_gene}
+				->{$seed_query_gene}))
+			{
+			  debug("CANDIDATE: [$seed_query_genome, ",
+				"$seed_query_gene -> $subject_genome, ",
+				"$subject_gene \@ ",
+				$hit_hash->{$seed_query_genome}
+				->{$subject_genome}->{$seed_query_gene}
+				->{$subject_gene}->{EVALUE},"].");
+			  $genome_check->{$subject_genome} = 1;
+			  push(@{$ordered_hits->{$subject_genome}},
+			       [$subject_gene,
+				$hit_hash->{$seed_query_genome}
+				->{$subject_genome}->{$seed_query_gene}
+				->{$subject_gene}->{EVALUE}]);
+			}
+		    }
+	      }
+
+	    #Skip this one if the seed doesn't hit every genome
+	    next if(scalar(keys(%$genome_check)) < $num_genomes &&
+		    #This is for when we're outputting paralogs for one genome
+		    $num_genomes != 1);
+
+	    #Order the subject hits by e-value of the hit from the seed
+	    foreach my $genome (keys(%$ordered_hits))
+	      {@{$ordered_hits->{$genome}} =
+		 sort {$a->[1] <=> $b->[1]} @{$ordered_hits->{$genome}}}
+
+	    #This is where we will try to build our bidirectional set
+	    my $candidates = {$seed_query_genome => {$seed_query_gene => 1}};
+
+	    #See if we can get a bidirectional set from any combination of
+	    #genes.
+	    #Note that we will not be checking the seed gene because we already
+	    #know every candidate already bidirectionally hits it
+	    my $combo = [];
+	    my $sizes = [map {scalar(@{$ordered_hits->{$_}})}
+			 sort {$a cmp $b}
+			 grep {$_ ne $seed_query_genome}
+			 keys(%$ordered_hits)];
+	    my $ordered_keys = [sort {$a cmp $b}
+				grep {$_ ne $seed_query_genome}
+				keys(%$ordered_hits)];
+
+	    #Cycle through all possible combinations of non-seed genome genes
+	    #that the seed gene hit to see if everything hit eachother above
+	    #the cutoff (i.e. it exists in the hit hash)
+	    my $all_bidirec = 1;
+	    while(GetNextIndepCombo($combo,$sizes))
+	      {
+		$all_bidirec = 1;
+		for(my $genome_a_index = 0;
+		    $genome_a_index < scalar(@$combo);
+		    $genome_a_index++)
+		  {
+		    for(my $genome_b_index = $genome_a_index + 1;
+			$genome_b_index < scalar(@$combo);
+			$genome_b_index++)
+		      {
+			#Next if this is the same gene
+			next if($genome_a_index == $genome_b_index &&
+			        $combo->[$genome_a_index] ==
+				$combo->[$genome_b_index]);
+
+			#To make this more readable, set these temp. vars.
+			my $genome_a = $ordered_keys->[$genome_a_index];
+			my $genome_b = $ordered_keys->[$genome_b_index];
+			my $gene_a   =
+			  $ordered_hits->{$ordered_keys->[$genome_a_index]}
+			    ->[$combo->[$genome_a_index]]->[0];
+			my $gene_b   =
+			  $ordered_hits->{$ordered_keys->[$genome_b_index]}
+			    ->[$combo->[$genome_b_index]]->[0];
+
+			#Check to see if everything hits everything
+			if(#Forward Hit
+			   !exists($hit_hash->{$genome_a}->{$genome_b}
+				   ->{$gene_a}->{$gene_b}) ||
+			   #Reciprocal Hit
+			   !exists($hit_hash->{$genome_b}->{$genome_a}
+				   ->{$gene_b}->{$gene_a}))
+			  {
+			    debug("No Recip: [$genome_a, $gene_a -> ",
+				  "$genome_b, $gene_b]");
+			    $all_bidirec = 0;
+			    last;
+			  }
+		      }
+		    last if(!$all_bidirec);
+		  }
+
+		#If we found a fully bidirectional set of candidates, this is
+		#what we will try to expand below.
+		if($all_bidirec)
+		  {
+		    debug("FOUND AN ALL-BIDIRECTIONAL SET FOR SEED ",
+			  "[$seed_query_genome, $seed_query_gene].  ",
+			  "ADDING A SUBJECT FROM EACH:");
+
+		    my $genome_index = 0;
+		    foreach my $gene_index (@$combo)
+		      {
+			debug("SUBJECT: [$ordered_keys->[$genome_index], ",
+			      $ordered_hits->{$ordered_keys->[$genome_index]}
+			      ->[$gene_index]->[0],
+			      "]. [$genome_index] [$ordered_keys->[$genome_index]] [$gene_index] [$gene_index] [$ordered_hits->{$ordered_keys->[$genome_index]}->[$gene_index]]");
+			#Set the candidate's genome and gene keys based on the
+			#index stored in the combo array.  This should set the
+			#bidirectional set that was found.
+			$candidates->{$ordered_keys->[$genome_index]}
+			  ->{$ordered_hits->{$ordered_keys->[$genome_index]}
+			     ->[$gene_index]->[0]} = 1;
+			$genome_index++;
+		      }
+
+		    last;
+		  }
+	      }
+
+	    next unless($all_bidirec);
+
+	    #Put all the hits in an array ordered by E Value
+	    my @other_hits = sort {$a->[1] <=> $b->[1]}
+	      map {[$_,@{$ordered_hits->{$_}}]}
+		keys(%$ordered_hits);
+
+	    #We know that everything we have so far is fully bidirectional and
+	    #consists of the best hits (greedily constructed).  Now we want to
+	    #expand the bidirectional set we found to any of the other hits
+	    #from the candidate set.
+	    foreach my $next_best_hit (@other_hits)
+	      {
+		#Skip this hit if it was added before above
+		next if(exists($candidates->{$next_best_hit->[0]}) &&
+			exists($candidates->{$next_best_hit->[0]}
+			       ->{$next_best_hit->[1]}));
+		my $another_bidirec = 1;
+		foreach my $subject_genome (keys(%$candidates))
+		  {
+		    foreach my $candidate (keys(%{$candidates
+						    ->{$subject_genome}}))
+		      {
+			if(#Forward Hit
+			   !exists($hit_hash->{$next_best_hit->[0]}
+				   ->{$subject_genome}->{$next_best_hit->[1]}
+				   ->{$candidate}) ||
+			   #Reciprocal Hit
+			   !exists($hit_hash->{$subject_genome}
+				   ->{$next_best_hit->[0]}->{$candidate}
+				   ->{$next_best_hit->[1]}))
+			  {
+			    $another_bidirec = 0;
+			    last;
+			  }
+		      }
+		    last unless($another_bidirec);
+		  }
+
+		#If the gene stored in next_best_hit bidirectionally hits
+		#everything, add it to the set
+		if($another_bidirec)
+		  {$candidates->{$next_best_hit->[0]}->{$next_best_hit->[1]} =
+		     1}
+	      }
+
+	    if($all_bidirec)
+	      {
+		#Update the seen hash so we can skip over seed paralogs
+		foreach my $seed_gene (keys(%{$candidates
+						->{$seed_query_genome}}))
+		  {$seen_hash->{$seed_gene}++}
+
+		$commons_found++;
+		my $common_group = [];
+		foreach my $genome (keys(%$candidates))
+		  {push(@$common_group,
+			[$genome,keys(%{$candidates->{$genome}})])}
+
+		outputGroup($common_group,$commons_found);
 	      }
 	  }
-	if($all_bidirectional)
-	  {
-	    $commons_found++;
-	    outputGroup($common_group,$commons_found);
-	  }
       }
-
-    verbose("Found $commons_found common genes.");
 
 #    #Output paralogs if the paralogs suffix has been supplied
 #    if(defined($paralogs_suffix) && $paralogs_suffix eq '')
@@ -923,6 +1154,87 @@ if($main::error_number || $main::warning_number)
 ##
 
 
+#This sub has a "bag" for each position being incremented.  in other words, the
+#$pool_size is an array of values equal in size to the $set_size
+sub GetNextIndepCombo
+  {
+    #Read in parameters
+    my $combo      = $_[0];  #An Array of numbers
+    my $pool_sizes = $_[1];  #An Array of numbers indicating the range for each
+                             #position in $combo
+
+    if(ref($combo) ne 'ARRAY' ||
+       scalar(grep {/\D/} @$combo))
+      {
+	print STDERR ("ERROR:ordered_digit_increment.pl:GetNextIndepCombo:",
+		      "The first argument must be an array reference to an ",
+		      "array of integers.\n");
+	return(0);
+      }
+    elsif(ref($pool_sizes) ne 'ARRAY' ||
+	  scalar(grep {/\D/} @$pool_sizes))
+      {
+	print STDERR ("ERROR:ordered_digit_increment.pl:GetNextIndepCombo:",
+		      "The second argument must be an array reference to an ",
+		      "array of integers.\n");
+	return(0);
+      }
+
+    my $set_size   = scalar(@$pool_sizes);
+
+    #Initialize the combination if it's empty (first one) or if the set size
+    #has changed since the last combo
+    if(scalar(@$combo) == 0 || scalar(@$combo) != $set_size)
+      {
+	#Empty the combo
+	@$combo = ();
+	#Fill it with zeroes
+        @$combo = (split('','0' x $set_size));
+	#Return true
+        return(1);
+      }
+
+    my $cur_index = $#{@$combo};
+
+    #Increment the last number of the combination if it is below the pool size
+    #(minus 1 because we start from zero) and return true
+    if($combo->[$cur_index] < ($pool_sizes->[$cur_index] - 1))
+      {
+        $combo->[$cur_index]++;
+        return(1);
+      }
+
+    #While the current number (starting from the end of the combo and going
+    #down) is at the limit and we're not at the beginning of the combination
+    while($combo->[$cur_index] == ($pool_sizes->[$cur_index] - 1) &&
+	  $cur_index >= 0)
+      {
+	#Decrement the current number index
+        $cur_index--;
+      }
+
+    #If we've gone past the beginning of the combo array
+    if($cur_index < 0)
+      {
+	@$combo = ();
+	#Return false
+	return(0);
+      }
+
+    #Increment the last number out of the above loop
+    $combo->[$cur_index]++;
+
+    #For every number in the combination after the one above
+    foreach(($cur_index+1)..$#{@$combo})
+      {
+	#Set its value equal to 0
+	$combo->[$_] = 0;
+      }
+
+    #Return true
+    return(1);
+  }
+
 sub isGenomeBidirectional
   {
     my $gene_list    = $_[0];
@@ -1006,7 +1318,14 @@ rwleach\@ccr.buffalo.edu
 * WHAT IS THIS: This script takes a table of blast results generated by
                 bidirectional_blast.pl and a series of cutoffs and generates
                 sets of "common genes" among all the blasted genomes which all
-                hit one another.
+                hit one another.  Note that some data could yield duplicate
+                gene IDs spread among different common groups.  This can be due
+                to gene fragmentation, fusion proteins, or duplicate sequence.
+                This script does not look for bidirectional best hits, but all
+                bidirectional hits above a cutoff.  This is to accommodate
+                fragmented sequence data.
+
+                Reference Mode (see --fully-bidirectional)
 
                 First, a seed genome is arbitrarily selected and the genes are
                 sorted into paralogous sets where each gene hits all other
@@ -1024,6 +1343,17 @@ rwleach\@ccr.buffalo.edu
                 however with stringent hit cutoffs, this should represent
                 negligible error in the number of groups output.  Errors are
                 output if a gene is found in multiple groups.
+
+                Fully Bidirectional Mode (see --fully-bidirectional)
+
+                In this mode, a seed genome is chosen.  Each gene of the seed
+                genome is interrogated for bidirectional hits to all other
+                genomes.  If some are found in every other genome, all
+                combinations of one gene from each genome is inspected to see
+                that they are fully bidirectional.  Once one gene from each
+                genome is found, the remaining hits (from any genome) are
+                tested to see if they can be added to the final set and still
+                be fully bidirectional.
 
 * INPUT FORMAT: Generate input files using the standard output from
                 bidirectional_blast.pl.  Optionally, an additional column may
@@ -1131,6 +1461,11 @@ end_print
                                    order to be retained.  Inclusive.
      -p|--percent-        OPTIONAL [10] The minimum percent identity a blast
         identity-cutoff            hit must be to be retained.  Inclusive.
+     -b|--fully-          OPTIONAL [Off] The default behavior is "Reference
+        bidirectional              Mode" which arbitrarily selects a reference
+                                   genome and has a loose requirement for
+                                   bidirectional hits.  See --help for more
+                                   details.
      -o|--outfile-suffix  OPTIONAL [nothing] This suffix is added to the input
                                    file names to use as output files.
                                    Redirecting a file into this script will
