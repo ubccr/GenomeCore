@@ -9,8 +9,8 @@
 #Copyright 2007
 
 #These variables (in main) are used by printVersion()
-my $template_version_number = '1.34';
-my $software_version_number = '1.4';
+my $template_version_number = '1.33';
+my $software_version_number = '1.5';
 
 ##
 ## Start Main
