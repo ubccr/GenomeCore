@@ -1,12 +1,10 @@
 #!/usr/bin/perl -w
 
-#bidirectional_blast.pl
-#Generated using perl_script_template.pl 1.33
+#Generated using perl_script_template.pl 1.38
 #Robert W. Leach
 #rwleach@ccr.buffalo.edu
-#Created on 4/21/2008
 #Center for Computational Research
-#Copyright 2007
+#Copyright 2008
 
 #                    GNU GENERAL PUBLIC LICENSE
 #                       Version 3, 29 June 2007
@@ -683,9 +681,9 @@
 #Public License instead of this License.  But first, please read
 #<http://www.gnu.org/philosophy/why-not-lgpl.html>.
 
-#These variables (in main) are used by printVersion()
-my $template_version_number = '1.33';
-my $software_version_number = '1.3';
+#These variables (in main) are used by getVersion() and usage()
+my $software_version_number = '1.0';
+my $created_on_date         = '8/2/2009';
 
 ##
 ## Start Main
@@ -700,75 +698,77 @@ my @input_files         = ();
 my $current_output_file = '';
 my $help                = 0;
 my $version             = 0;
-my $force               = 0;
-my $blast_command       = 'blastall';
-my $format_command      = 'formatdb';
-my $blast_params        = '-v 20 -b 20 -e 100 -F F';
-my $program             = 'blastp';
-my $parse_only          = 0;
-my $command_file        = '';
+my $overwrite           = 0;
+my $noheader            = 0;
 
 #These variables (in main) are used by the following subroutines:
-#verbose, error, warning, debug, printVersion, getCommand and usage
+#verbose, error, warning, debug, getCommand, quit, and usage
 my $preserve_args = [@ARGV];  #Preserve the agruments for getCommand
 my $verbose       = 0;
 my $quiet         = 0;
 my $DEBUG         = 0;
+my $ignore_errors = 0;
 
 my $GetOptHash =
-  {'p|blast-program=s'  => \$program,                #OPTIONAL [blastp]
-   'b|blast-params=s'   => \$blast_params,           #OPTIONAL [-v 20 -b 20
-                                                     # -e 100 -F F]
-   'parse-only!'        => \$parse_only,             #OPTIONAL [Off]
-   'i|input-file=s'     => sub {push(@input_files,   #REQUIRED unless <> is
+  {'i|input-file=s'     => sub {push(@input_files,   #REQUIRED unless <> is
 				     sglob($_[1]))}, #         supplied
    '<>'                 => sub {push(@input_files,   #REQUIRED unless -i is
 				     sglob($_[0]))}, #         supplied
-   'c|command-file=s'   => sub {$command_file =      #OPTIONAL [nothing]
-				  sglob($_[1])},
-   'e|blast-path=s'     => \$blast_command,          #OPTIONAL [blastall]
    'o|outfile-suffix=s' => \$outfile_suffix,         #OPTIONAL [undef]
-   'f|force!'           => \$force,                  #OPTIONAL [Off]
-   'v|verbose!'         => \$verbose,                #OPTIONAL [Off]
-   'q|quiet!'           => \$quiet,                  #OPTIONAL [Off]
-   'h|help!'            => \$help,                   #OPTIONAL [Off]
-   'debug!'             => \$DEBUG,                  #OPTIONAL [Off]
-   'version!'           => \$version,                #OPTIONAL [Off]
+   'force|overwrite'    => \$overwrite,              #OPTIONAL [Off]
+   'ignore'             => \$ignore_errors,          #OPTIONAL [Off]
+   'verbose:+'          => \$verbose,                #OPTIONAL [Off]
+   'quiet'              => \$quiet,                  #OPTIONAL [Off]
+   'debug:+'            => \$DEBUG,                  #OPTIONAL [Off]
+   'help|?'             => \$help,                   #OPTIONAL [Off]
+   'version'            => \$version,                #OPTIONAL [Off]
+   'noheader'           => \$noheader,               #OPTIONAL [Off]
   };
 
 #If there are no arguments and no files directed or piped in
 if(scalar(@ARGV) == 0 && isStandardInputFromTerminal())
   {
     usage();
-    exit(0);
+    quit(0);
   }
 
-#Get the input options
-GetOptions(%$GetOptHash);
+#Get the input options & catch any errors in option parsing
+unless(GetOptions(%$GetOptHash))
+  {
+    #Try to guess which arguments GetOptions is complaining about
+    my @possibly_bad = grep {!(-e $_)} @input_files;
+
+    error('Getopt::Long::GetOptions reported an error while parsing the ',
+	  'command line arguments.  The error should be above.  Please ',
+	  'correct the offending argument(s) and try again.');
+    usage(1);
+    quit(-1);
+  }
 
 #Print the debug mode (it checks the value of the DEBUG global variable)
-debug("Debug mode on.");
+debug('Debug mode on.') if($DEBUG > 1);
 
 #If the user has asked for help, call the help subroutine
 if($help)
   {
     help();
-    exit(0);
+    quit(0);
   }
 
 #If the user has asked for the software version, print it
 if($version)
   {
-    printVersion();
-    exit(0);
+    print(getVersion($verbose),"\n");
+    quit(0);
   }
 
 #Check validity of verbosity options
-if($verbose && $quiet)
+if($quiet && ($verbose || $DEBUG))
   {
     $quiet = 0;
-    error("You cannot supply verbose and quiet flags at the same time.");
-    exit(1);
+    error('You cannot supply the quiet and (verbose or debug) flags ',
+	  'together.');
+    quit(-2);
   }
 
 #Put standard input into the input_files array if standard input has been redirected in
@@ -778,20 +778,30 @@ if(!isStandardInputFromTerminal())
 
     #Warn the user about the naming of the outfile when using STDIN
     if(defined($outfile_suffix))
-      {warning("Input on STDIN detected along with an outfile suffix.  Your ",
-	       "output file will be named STDIN$outfile_suffix")}
+      {warning('Input on STDIN detected along with an outfile suffix.  Your ',
+	       'output file will be named STDIN',$outfile_suffix)}
+    #Warn users when they turn on verbose and output is to the terminal
+    #(implied by no outfile suffix checked above) that verbose messages may be
+    #uncleanly overwritten
+    elsif($verbose && isStandardOutputToTerminal())
+      {warning('You have enabled --verbose, but appear to possibly be ',
+	       'outputting to the terminal.  Note that verbose messages can ',
+	       'interfere with formatting of terminal output making it ',
+	       'difficult to read.  You may want to either turn verbose off, ',
+	       'redirect output to a file, or supply an outfile suffix (-o).')}
   }
 
 #Make sure there is input
 if(scalar(@input_files) == 0)
   {
-    error("No input files detected.");
+    error('No input files detected.');
     usage(1);
-    exit(2);
+    quit(-3);
   }
 
 #Check to make sure previously generated output files won't be over-written
-if(!$force && defined($outfile_suffix))
+#Note, this does not account for output redirected on the command line
+if(!$overwrite && defined($outfile_suffix))
   {
     my $existing_outfiles = [];
     foreach my $output_file (map {($_ eq '-' ? 'STDIN' : $_) . $outfile_suffix}
@@ -801,364 +811,231 @@ if(!$force && defined($outfile_suffix))
     if(scalar(@$existing_outfiles))
       {
 	error("The output files: [@$existing_outfiles] already exist.  ",
-	      "Use -f to force overwrite.  E.g.\n\t",
-	      getCommand(1),' --force');
-	exit(3);
+	      'Use --overwrite to force an overwrite of existing files.  ',
+	      "E.g.:\n",getCommand(1),' --overwrite');
+	quit(-4);
       }
   }
 
-if(isStandardOutputToTerminal() && !defined($outfile_suffix))
-  {verbose("NOTE: VerboseOverMe functionality has been altered to yield ",
-	   "clean STDOUT output.")}
-
-my $exe_check = `which $blast_command`;
-if($exe_check eq '')
-  {error("Blastall command not found: [$blast_command].")}
-
-if(-e $command_file && !$force)
-  {
-    error("The output command file: [$command_file] already exists.  ",
-	  "Use -f to force overwrite.  E.g.\n\t",
-	  getCommand(1),' --force');
-    exit(4);
-  }
-
-verbose("Run conditions: ",getCommand(1),"\n");
+verbose('Run conditions: ',getCommand(1));
 
 #If output is going to STDOUT instead of output files with different extensions
-if(!defined($outfile_suffix))
-  {verbose("[STDOUT] Opened for all output.")}
+#or if STDOUT was redirected, output run info once
+verbose('[STDOUT] Opened for all output.') if(!defined($outfile_suffix));
 
-my $hit_hash           = {};
-my $combo_array        = [];
-my $error_flag         = 0;
-my $command            = '';
-my $check_file_names   = {};
-my $dupe_id_error      = 0;
-my $defline_hash       = {};
-my $blast_result_files = {};
+#Store info. about the run as a comment at the top of the output file if
+#STDOUT has been redirected to a file
+if(!isStandardOutputToTerminal() && !$noheader)
+  {print('#',getVersion(),"\n",
+	 '#',scalar(localtime($^T)),"\n",
+	 '#',getCommand(1),"\n");}
 
-if($command_file ne '')
-  {
-    if(!open(COMMANDS,">$command_file"))
-      {
-	error("Unable to open command file [$command_file]: $!");
-	exit(5);
-      }
-  }
-
+#For each input file
 foreach my $input_file (@input_files)
   {
-    my $protein_bool = ($program eq 'blastp' || $program eq 'blastx' ?
-			'T' : 'F');
-    $command = "$format_command -p $protein_bool -i $input_file";
-    verbose($command,"\n");
-    `$command`;
-    if($?)
+    #If an output file name suffix has been defined
+    if(defined($outfile_suffix))
       {
-	$error_flag = 1;
-	error("Format of [$input_file] failed with message: [$!].  The ",
-	      "command executed was: [$command].");
-      }
+	##
+	## Open and select the next output file
+	##
 
-    verbose("BLASTING $input_file against $input_file") unless($parse_only);
-    my $file_name    =  $input_file;
-    $file_name       =~ s/.*\///;
-    $blast_result_files->{"$input_file.$file_name.br"} =
-      [$file_name,$file_name];
+	#Set the current output file name
+	$current_output_file = ($input_file eq '-' ? 'STDIN' : $input_file)
+	  . $outfile_suffix;
 
-    if(!$parse_only && !$force && -e "$input_file.$file_name.br")
-      {
-	error("The blast results file: [$input_file.$file_name.br] already ",
-	      "exists.  Use -f to force overwrite.  E.g.\n\t",
-	      getCommand(1),' --force');
-      }
-    elsif(!$parse_only)
-      {
-	$command  = "$blast_command -i $input_file -d $input_file -p ";
-	$command .= "$program $blast_params > $input_file.$file_name.br";
-	verbose($command,"\n");
-	if($command_file ne '')
-	  {print COMMANDS ("$command\n")}
-	else
+	#Open the output file
+	if(!open(OUTPUT,">$current_output_file"))
 	  {
-	    `$command`;
-	    if($?)
-	      {
-		$error_flag = 1;
-		error("Blast of [$input_file -> $input_file] failed with ",
-		      "message: [$!].  The command executed was: [$command].");
-	      }
+	    #Report an error and iterate if there was an error
+	    error("Unable to open output file: [$current_output_file].\n$!");
+	    next;
 	  }
+	else
+	  {verbose("[$current_output_file] Opened output file.")}
+
+	#Select the output file handle
+	select(OUTPUT);
+
+	#Store info. about the run as a comment at the top of the output file
+	print('#',getVersion(),"\n",
+	      '#',scalar(localtime($^T)),"\n",
+	      '#',getCommand(1),"\n") unless($noheader);
       }
 
-    #Make sure the file names are unique
-    $file_name = $input_file;
-    $file_name =~ s/.*\///;
-    $check_file_names->{$file_name}++;
-
-    #Make sure the sequence IDs are unique
-    my $check_ids = {};
     #Open the input file
     if(!open(INPUT,$input_file))
       {
 	#Report an error and iterate if there was an error
-	error("Unable to open input file: [$input_file]\n$!");
+	error("Unable to open input file: [$input_file].\n$!");
 	next;
       }
     else
-      {verboseOverMe("[",
-		     ($input_file eq '-' ? 'STDIN' : $input_file),
-		     "] Opened input file.")}
+      {verbose('[',($input_file eq '-' ? 'STDIN' : $input_file),'] ',
+	       'Opened input file.')}
 
-    my $line_num = 0;
+    my $line_num     = 0;
+    my $verbose_freq = 100;
+    my $all_hash     = {};
+    my @genomes      = ();
 
     #For each line in the current input file
     while(getLine(*INPUT))
       {
 	$line_num++;
-	verboseOverMe("[",
-		      ($input_file eq '-' ? 'STDIN' : $input_file),
-		      "] Reading line: [$line_num].");
+	verboseOverMe('[',($input_file eq '-' ? 'STDIN' : $input_file),'] ',
+		      "Reading line: [$line_num].") unless($line_num %
+							   $verbose_freq);
 
-	if(/>\s*(\S+)/)
+	next if(/^\s*$/ || /^\s*#/);
+
+	chomp;
+	s/^ +//;
+	s/ +$//;
+
+	push(@genomes,[split(/ *\t */,$_)]);
+
+	if($genomes[-1]->[-1] !~ /^\d+$/)
 	  {
-	    my $id = $1;
-	    $check_ids->{$id}++;
-	    if(/>\s*(\S.*)$/)
-	      {$defline_hash->{$file_name}->{$id} = $1}
+	    error("Line $line_num: [$_] does not end in an integer.  The ",
+		  "last column must be an integer reflecting the number of ",
+		  "common genes among all the genomes on that line.  ",
+		  "Skipping this line.");
+	    pop(@genomes);
+	    next;
 	  }
+
+	#For each genome (all but the last element of the last subarray)
+	foreach my $genome (@{$genomes[-1]}[0..($#{$genomes[-1]}-1)])
+	  {$all_hash->{$genome}++}
       }
 
     close(INPUT);
 
-    verbose("[",
-	    ($input_file eq '-' ? 'STDIN' : $input_file),
-	    '] Input file done.  Time taken: [',
-	    scalar(markTime()),
-	    " Seconds].");
+    verbose('[',($input_file eq '-' ? 'STDIN' : $input_file),'] ',
+	    'Input file done.  Time taken: [',scalar(markTime()),' Seconds].');
 
-    if(scalar(grep {$_ > 1} values(%$check_ids)))
+    my($max_size);
+
+    #Sort the arrays by descending size
+    @genomes = sort {scalar(@$b) <=> scalar(@$a)} @genomes;
+    #If the last array is of size 1, put it first (to allow "all" to not have
+    #any of the genomes specified)
+    if(scalar(@{$genomes[-1]}) == 1)
       {
-	$dupe_id_error = 1;
-	error("You have duplicate keys in fasta file: [$input_file]: [",
-	      join(',',grep {$check_ids->{$_} > 1} keys(%$check_ids)),
-	      "].");
+	my $first = pop(@genomes);
+	unshift(@$first,keys(%$all_hash));
+	unshift(@genomes,$first);
+	$max_size = scalar(keys(%$all_hash));
       }
-  }
+    else
+      {$max_size = scalar(@{$genomes[0]}) - 1}
 
-if($dupe_id_error)
-  {
-    error("Please edit your fasta files to remove the duplicate IDs ",
-	  "indicated above.");
-    exit(3);
-  }
+    my $solution = [[@{$genomes[0]}]];
 
-#See if we need to use full paths in the hash keys
-if(scalar(grep {$_ > 1} values(%$check_file_names)))
-  {
-    error("Your file names (not including the file path) must be unique.  ",
-	  "There are multple files with these names: [",
-	  join(',',grep {$check_file_names->{$_} > 1}
-	       keys(%$check_file_names)),
-	  "].");
-    exit(3);
-  }
-
-$error_flag  = 0;
-while(GetNextCombo($combo_array,2,scalar(@input_files)))
-  {
-    verbose("BLASTING ",
-	    join(" against ",(map {$input_files[$_]} @$combo_array)),
-	    "\n") unless($parse_only);
-    my $query_file   =  $input_files[$combo_array->[0]];
-    my $subject_file =  $input_files[$combo_array->[1]];
-    my $file_name    =  $subject_file;
-    $file_name       =~ s/.*\///;
-    my $file_name2   =  $query_file;
-    $file_name2      =~ s/.*\///;
-    $blast_result_files->{"$query_file.$file_name.br"} =
-      [$file_name2,$file_name];
-
-    if(!$parse_only && !$force && -e "$query_file.$file_name.br")
+    foreach my $size (map {$max_size - $_} (1..($max_size - 1)))
       {
-	error("The blast results file: [$query_file.$file_name.br] already ",
-	      "exists.  Use -f to force overwrite.  E.g.\n\t",
-	      getCommand(1),' --force');
-      }
-    elsif(!$parse_only)
-      {
-	$command  = "$blast_command -i $query_file -d $subject_file -p ";
-	$command .= "$program $blast_params > $query_file.$file_name.br";
-	verbose($command,"\n");
-	if($command_file ne '')
-	  {print COMMANDS ("$command\n")}
-	else
+	verbose("Calculating commons among all combinations of $size ",
+		"genomes.");
+
+	#Figure out how many subtractions will be required so we can make sure
+	#the input is complete
+	my $init_num_expected_subtractions =
+	  getNumSubtractions($max_size - $size);
+
+	#Solve each combo of overlaps at this size
+	foreach my $ary (grep {(scalar(@$_) - 1) == $size} @genomes)
 	  {
-	    `$command`;
-	    if($?)
+	    debug("Calculating for [@$ary]");
+
+	    #Figure out how many subtractions will be required so we can make
+	    #sure the input is complete
+	    my $num_expected_subtractions = $init_num_expected_subtractions;
+
+	    debug("Number of expected subtractions: ",
+		  $num_expected_subtractions);
+
+	    #Create a hash that chooses the intersection we are going to solve
+	    my $genome_combo = {};
+	    foreach my $genome (@{$ary}[0..($#{$ary} - 1)])
+	      {$genome_combo->{$genome} = 0};
+
+	    #Calculate & print number
+
+	    #The number of common genes among this combo of genomes
+	    my $common = $ary->[-1];
+
+	    debug("Initial starting value: $common");
+
+	    #For each array in the solution already computed
+	    foreach my $sol (@$solution)
 	      {
-		$error_flag = 1;
-		error("Blast of [$query_file -> $subject_file] failed with ",
-		      "message: [$!].  The command executed was: [$command].");
-	      }
-	  }
-      }
-
-    verbose("BLASTING ",
-	    join(" against ",reverse(map {$input_files[$_]} @$combo_array)),
-	    "\n") unless($parse_only);
-    $query_file   = $input_files[$combo_array->[1]];
-    $subject_file = $input_files[$combo_array->[0]];
-    $file_name    = $subject_file;
-    $file_name =~ s/.*\///;
-    $file_name2   = $query_file;
-    $file_name2 =~ s/.*\///;
-    $blast_result_files->{"$query_file.$file_name.br"} =
-      [$file_name2,$file_name];
-
-    if(!$parse_only && !$force && -e "$query_file.$file_name.br")
-      {
-	error("The blast results file: [$query_file.$file_name.br] already ",
-	      "exists.  Use -f to force overwrite.  E.g.\n\t",
-	      getCommand(1),' --force');
-      }
-    elsif(!$parse_only)
-      {
-	$command  = "$blast_command -i $query_file -d $subject_file -p ";
-	$command .= "$program $blast_params > $query_file.$file_name.br";
-	verbose($command,"\n");
-	if($command_file ne '')
-	  {print COMMANDS ("$command\n")}
-	else
-	  {
-	    `$command`;
-	    if($?)
-	      {
-		$error_flag = 1;
-		error("Blast of [$query_file -> $subject_file] failed with ",
-		      "message: [$!].  The command executed was: [$command].");
-	      }
-	  }
-      }
-  }
-
-##
-## Now store all the blast results in a hash
-##
-
-#my $result_hash = {};
-
-if($command_file eq '')
-  {
-    foreach my $blast_result_file (keys(%$blast_result_files))
-      {
-	#Open the input file
-	if(!open(INPUT,$blast_result_file))
-	  {
-	    #Report an error and iterate if there was an error
-	    error("Unable to open input file: [$blast_result_file]\n$!");
-	    next;
-	  }
-	else
-	  {verboseOverMe("[$blast_result_file] Opened input file.")}
-
-	my($query_id,
-	   $query_length,
-	   $subject_id,
-	   $subject_length,
-	   $match_length,
-	   $evalue,
-	   $identity,
-	   $last_added);
-	my $alignment_count = 0;
-	my $line_num = 0;
-
-	#For each line in the current input file
-	while(getLine(*INPUT))
-	  {
-	    $line_num++;
-	    verboseOverMe("[$blast_result_file] Reading line: [$line_num].");
-
-	    if(/Query=\s*(\S+)/)
-	      {
-		if(defined($last_added) && !$last_added)
+		#If the current solved combo (sol) contains all the genomes in
+		#the current cross-section we're trying to solve
+		if(scalar(grep {exists($genome_combo->{$_})}
+			  @{$sol}[0..($#{$sol} - 1)]) ==
+		   scalar(keys(%$genome_combo)))
 		  {
-		    addResult($blast_result_files
-			      ->{$blast_result_file}->[0],#Query
-			      $blast_result_files
-			      ->{$blast_result_file}->[1],#Subject
-			      0,
-			      $query_id,
-			      $query_length,
-			      '',
-			      '',
-			      '',
-			      '',
-			      '');
+		    debug("Subtracting solution: [@$sol].");
+		    $num_expected_subtractions--;
+		    #Subtract it from our common genes
+		    $common -= $sol->[-1];
 		  }
-		$query_id = $1;
 	      }
-	    elsif(/^\s+\(([\d,]+) letters\)\s*$/)
-	      {
-		$query_length = $1;
-		$query_length =~ s/,//g;
-	      }
-	    elsif(/^\s*>\s*(\S+)/)
-	      {
-		$subject_id = $1;
-		$alignment_count = 0;
-	      }
-	    elsif(/^\s+Length = ([\d,]+)\s*$/)
-	      {
-		$subject_length = $1;
-		$subject_length =~ s/,//g;
-	      }
-	    elsif(/Expect = ([^,\n]+)/)
-	      {
-		$evalue = $1;
-		$alignment_count++;
-	      }
-	    elsif(/^\s*Identities = [\d,]+\/([\d,]+) \((\d+)/)
-	      {
-		$match_length = $1;
-		$match_length =~ s/,//g;
-		$identity = $2;
 
-		addResult($blast_result_files
-			  ->{$blast_result_file}->[0], #Query
-			  $blast_result_files
-			  ->{$blast_result_file}->[1], #Subject
-			  $alignment_count,         #Number hit to this subject
-			  $query_id,
-			  $query_length,
-			  $subject_id,
-			  $subject_length,
-			  $match_length,
-			  $evalue,
-			  $identity);
-	      }
+	    if($num_expected_subtractions != 0)
+	      {error("Data may be missing or redundant.  The number of ",
+		     "common genes among all possible combinations of ",
+		     "genomes is expected in the input.  When solving for ",
+		     "this combination of genomes with common genes: ",
+		     "[@$ary], there were expected to be ",
+		     "$init_num_expected_subtractions, but ",
+		     ($num_expected_subtractions > 0 ?
+		      "$num_expected_subtractions remain left undone" :
+		      abs($num_expected_subtractions) . " too many were done"),
+		     ".  Please make sure all possible combinations of 2 or ",
+		     "more genomes is submitted in the input file.")}
+	    else
+	      {push(@$solution,[keys(%$genome_combo),$common])}
 	  }
+      }
 
-	close(INPUT);
+    foreach my $sol (@$solution)
+      {print(join("\t",@$sol),"\n")}
 
-	verbose("[$blast_result_file] Input file done.  Time taken: [",
-		scalar(markTime()),
-		" Seconds].");
+    #If an output file name suffix is set
+    if(defined($outfile_suffix))
+      {
+	#Select standard out
+	select(STDOUT);
+	#Close the output file handle
+	close(OUTPUT);
+
+	verbose("[$current_output_file] Output file done.");
       }
   }
 
-#Report the number of errors, warnings, and debugs
-verbose("Done.  EXIT STATUS: [",
-	"ERRORS: ",
-	($main::error_number ? $main::error_number : 0),
-	" WARNINGS: ",
-	($main::warning_number ? $main::warning_number : 0),
-	($DEBUG ?
-	 " DEBUGS: " . ($main::debug_number ? $main::debug_number : 0) : ''),
-        " TIME: ",scalar(markTime(0)),"s]");
-if($main::error_number || $main::warning_number)
-  {verbose("Scroll up to inspect errors and warnings.")}
+verbose("[STDOUT] Output done.") if(!defined($outfile_suffix));
+
+#Report the number of errors, warnings, and debugs on STDERR
+if(!$quiet && ($verbose                     ||
+	       $DEBUG                       ||
+	       defined($main::error_number) ||
+	       defined($main::warning_number)))
+  {
+    print STDERR ("\n",'Done.  EXIT STATUS: [',
+		  'ERRORS: ',
+		  ($main::error_number ? $main::error_number : 0),' ',
+		  'WARNINGS: ',
+		  ($main::warning_number ? $main::warning_number : 0),
+		  ($DEBUG ?
+		   ' DEBUGS: ' .
+		   ($main::debug_number ? $main::debug_number : 0) : ''),' ',
+		  'TIME: ',scalar(markTime(0)),"s]\n");
+
+    if($main::error_number || $main::warning_number)
+      {print STDERR ("Scroll up to inspect errors and warnings.\n")}
+  }
 
 ##
 ## End Main
@@ -1197,116 +1074,32 @@ if($main::error_number || $main::warning_number)
 ## Subroutines
 ##
 
-sub addResult
+sub getNumSubtractions
   {
-#    my $hash_result     = $_[0];
-    my $query_file      = $_[0];
-    my $subject_file    = $_[1];
-    my $alignment_count = $_[2];
-    my $query_id        = $_[3];
-    my $query_length    = $_[4];
-    my $subject_id      = (defined($_[5]) ? $_[5] : '');
-    my $subject_length  = (defined($_[6]) ? $_[6] : '');
-    my $match_length    = (defined($_[7]) ? $_[7] : '');
-    my $evalue          = (defined($_[8]) ? $_[8] : '');
-    my $identity        = (defined($_[9]) ? $_[9] : '');
+    my $n = $_[0];
+    my $sum = 1;
+    if($n == 0)
+      {return(0)}
+    elsif($n < 0)
+      {
+	error("Invalid input: [$n].  Must be a positive integer.");
+	return(0);
+      }
 
-    #Assume that the first alignment is the best & longest
-    return if($alignment_count > 1);
+    my $n_fact = factorial($n);
 
-    my $larger_length = ($query_length > $subject_length ?
-			 $query_length : $subject_length);
+    foreach my $r (1..($n - 1))
+      {$sum += $n_fact / (factorial($r) * factorial($n - $r))}
 
-#    $hash_result->{$query_file}->{$subject_file}->{$query_id}->{$subject_id} =
-#      {LENGTHRATIO => ($match_length / $larger_length),
-#       EVALUE      => $evalue,
-#       IDENTITY    => $identity};
-
-    print(join("\t",($query_file,
-		     $subject_file,
-		     $query_id,
-		     $subject_id,
-		     ($match_length / $larger_length),
-		     $evalue,
-		     $identity)),"\n");
+    return($sum);
   }
 
-
-##
-##Copied from ordered_digit_increment 4/21/2008 -Rob
-##
-#This subroutine takes a current Combination, the size of the combination set,
-#and the pool size.  It returns a new combination that hasn't been returned
-#before.  This is an n_choose_r iterator.  It returns true if it was able to
-#create an unseen combination, false if there are no more/
-sub GetNextCombo
+sub factorial
   {
-    #Read in parameters
-    my $combo     = $_[0];  #An Array of numbers
-    my $set_size  = $_[1];  #'r' from (n choose r)
-    my $pool_size = $_[2];  #'n' from (n choose r)
-
-    #return false and report error if the combo is invalid
-    if(@$combo > $pool_size)
-      {
-	print STDERR ("ERROR:GetNextCombo:Combination cannot be bigger than ",
-		      "the pool size!");
-	return(0);
-      }
-
-    #Initialize the combination if it's empty (first one) or if the set size
-    #has increased since the last combo
-    if(scalar(@$combo) == 0 || scalar(@$combo) != $set_size)
-      {
-	#Empty the combo
-	@$combo = ();
-	#Fill it with a sequence of numbers starting with 0
-        foreach(0..($set_size-1))
-          {push(@$combo,$_)}
-	#Return true
-        return(1);
-      }
-
-    #Define an upper limit for the last number in the combination
-    my $upper_lim = $pool_size - 1;
-    my $cur_index = $#{@$combo};
-
-    #Increment the last number of the combination if it is below the limit and
-    #return true
-    if($combo->[$cur_index] < $upper_lim)
-      {
-        $combo->[$cur_index]++;
-        return(1);
-      }
-
-    #While the current number (starting from the end of the combo and going
-    #down) is at the limit and we're not at the beginning of the combination
-    while($combo->[$cur_index] == $upper_lim && $cur_index >= 0)
-      {
-	#Decrement the limit and the current number index
-        $upper_lim--;
-        $cur_index--;
-      }
-
-    #Increment the last number out of the above loop
-    $combo->[$cur_index]++;
-
-    #For every number in the combination after the one above
-    foreach(($cur_index+1)..$#{@$combo})
-      {
-	#Set its value equal to the one before it plus one
-	$combo->[$_] = $combo->[$_-1]+1;
-      }
-
-    #If we've exceded the ppol size on the last number of the combination
-    if($combo->[-1] > $pool_size)
-      {
-	#Return false
-	return(0);
-      }
-
-    #Return true
-    return(1);
+    my $x = $_[0];
+    my $a = 1;
+    map {$a *= $_} (2..abs($x));
+    return($a);
   }
 
 ##
@@ -1319,41 +1112,64 @@ sub help
     my $lmd = localtime((stat($script))[9]);
     $script =~ s/^.*\/([^\/]+)$/$1/;
 
+    #$software_version_number  - global
+    #$created_on_date          - global
+    $created_on_date = 'UNKNOWN' if($created_on_date eq 'DATE HERE');
+
     #Print a description of this program
     print << "end_print";
 
-$script
-Copyright 2007
+$script version $software_version_number
+Copyright 2008
 Robert W. Leach
-Created on 4/21/2008
-Last Modified on $lmd
+Created: $created_on_date
+Last Modified: $lmd
 Center for Computational Research
 701 Ellicott Street
 Buffalo, NY 14203
 rwleach\@ccr.buffalo.edu
 
-* WHAT IS THIS: This script takes a series of fasta files and blasts each one
-                against every other (including itself).  Blast result files are
-                produced whose names are a composite of blast subject.query.br,
-                as well as a text-based table of hit data.
+* WHAT IS THIS: Given all combinations of genomes and the numbers of genes
+                which is common among them, this script will calculate all the
+                numbers that can populate a Venn Diagram.  It will warn you if
+                there are numbers that are missing, but it is not designed to
+                tell you which numbers are missing.
 
-* INPUT FORMAT: Fasta file (default format: nucleotide - See -p in the usage
-                output to change to protein).
+* INPUT FORMAT: Tab delimited text file.  Each line should represent a set of
+                genomes and the number of genes that is common among them.
+                All possible combinations of genomes must be supplied.  For
+                example, if there are 4 genomes, there is 1 set of all 4
+                genomes, 4 sets of 3 genomes, 6 sets of 2 genomes, and 4 sets
+                of 1 genome, meaning that there are 15 lines in the input file.
+                Note that if a line contains no genomes, it is assumed to
+                represent all genomes present in the file (in the case of the
+                example, 4).  If the number of common genes are correct, the
+                more genomes, the fewer possible common genes.  If this script
+                outputs negative numbers, then the input numbers were
+                incorrect.  Here is an example input file:
 
-* OUTPUT FORMAT: The blast files produced will be named like this:
+                cc30_bone_joint	cc30_endo	1634
+                cc30_bone_joint	2834
+                cc30_endo	2783
+                223
+                Staphylococcus_aureus_NCTC_8325	cc30_bone_joint	452
+                Staphylococcus_aureus_NCTC_8325	cc30_endo	452
+                Staphylococcus_aureus_NCTC_8325	2588
 
-                   <query_file>.<subject_file>.br
+                Note that the lines do not have to be in any particular order
+                and that the one line with a single number represents all 3
+                genomes present in the file (cc30_bone_joint, cc30_endo, and
+                Staphylococcus_aureus_NCTC_8325).  Genomes may have spaces in
+                the names.  Also note, a 'genome' is simply a set of genes.
+                In the example above, each 'genome' is actually a pool of
+                genomes except for Staphylococcus_aureus_NCTC_8325.
 
-                 The hit data output will consist of 7 tab-delimited columns
-                 like this:
+* OUTPUT FORMAT: The format output is the same as above except the numbers
+                 represent the common genes of the genomes on that line that
+                 are DIFFERENT from everything else.  Here is an example result
+                 from the example input above:
 
-                   queryFile	subjectFile	queryID	subjectID	matchLengthRatio	eValue	percentIdentity
 
-                 The match length ratio is the length of the match area (i.e.
-                 the number of alignment characters in the subject sequence -
-                 including gaps) divided by the larger of the two aligned
-                 sequences.  Note, this could potentially produce a ratio
-                 greater than 1.
 
 end_print
 
@@ -1374,12 +1190,12 @@ sub usage
     #Grab the first version of each option from the global GetOptHash
     my $options = '[' .
       join('] [',
-	   grep {$_ ne '-i'}        #Remove REQUIRED params
-	   map {my $key=$_;         #Save the key
-		$key=~s/\|.*//;     #Remove other versions
-		$key=~s/(\!|=.)$//; #Remove trailing getopt stuff
+	   grep {$_ ne '-i'}           #Remove REQUIRED params
+	   map {my $key=$_;            #Save the key
+		$key=~s/\|.*//;        #Remove other versions
+		$key=~s/(\!|=.|:.)$//; #Remove trailing getopt stuff
 		$key = (length($key) > 1 ? '--' : '-') . $key;} #Add dashes
-	   grep {$_ ne '<>'}        #Remove the no-flag parameters
+	   grep {$_ ne '<>'}           #Remove the no-flag parameters
 	   keys(%$GetOptHash)) .
 	     ']';
 
@@ -1389,64 +1205,53 @@ USAGE: $script -i "input file(s)" $options
 end_print
 
     if($no_descriptions)
-      {print("Execute $script with no options to see a description of the ",
-             "available parameters.\n")}
+      {print("`$script` for expanded usage.\n")}
     else
       {
         print << 'end_print';
 
-     -i|--input-file*     REQUIRED Space-separated fasta file(s inside quotes).
-                                   *No flag required.  Standard input via
-                                   redirection is acceptable.  Perl glob
-                                   characters (e.g. '*') are acceptable inside
-                                   quotes.
-     -c|--command-file    OPTIONAL [nothing] Supply a file name to this option
-                                   to output the blastall commands to a text
-                                   file that can be used to run the commands
-                                   on a cluster (e.g. via
-                                   qsub_command_wrapper.pl).  Supplying this
-                                   argument will cause the output hit table to
-                                   not be generated.  Run the script again
-                                   later using the --parse-only option to
-                                   generate the hit table.
-     -e|--blast-path      OPTIONAL [blastall] If blastall is not in your path,
-                                   supply the path to the blastall executable
-                                   with this option (e.g. /usr/bin/blastall).
-     -p|--blast-program   OPTIONAL [blastp] (blastn,blastp,tblastn,...)  See
-                                   usage of the blastall executable.
-     -b|--blast-params    OPTIONAL [-v 20 -b 20 -e 100 -F F] Optional
-                                   parameters to supply to the blastall
-                                   executable.  Note: Do not supply -i, -d, and
-                                   -p via this option.
-     --parse-only         OPTIONAL [Off] Supplying this option will cause blast
-                                   and formatdb to not run, but will still
-                                   parse the output files.  This is meant to be
-                                   used if you have run this script once before
-                                   already and want to generate a hit table
-                                   using a subset of input files.  You still
-                                   supply the fasta files as input and the
-                                   blast file names will be reconstructed.
+     -i|--input-file*     REQUIRED Space-separated input file(s inside quotes).
+                                   Standard input via redirection is
+                                   acceptable.  Perl glob characters (e.g. '*')
+                                   are acceptable inside quotes (e.g.
+                                   -i "*.txt *.text").  See --help for a
+                                   description of the input file format.
+                                   *No flag required.
      -o|--outfile-suffix  OPTIONAL [nothing] This suffix is added to the input
                                    file names to use as output files.
                                    Redirecting a file into this script will
                                    result in the output file name to be "STDIN"
-                                   with your suffix appended.
-     -f|--force           OPTIONAL [Off] Force overwrite of existing output
-                                   files (generated from previous runs of this
-                                   script).  Only used when the -o option is
-                                   supplied.
-     -v|--verbose         OPTIONAL [Off] Verbose mode.  Cannot be used with the
-                                   quiet flag.
-     -q|--quiet           OPTIONAL [Off] Quiet mode.  Turns off warnings and
-                                   errors.  Cannot be used with the verbose
-                                   flag.
-     -h|--help            OPTIONAL [Off] Help.  Use this option to see an
-                                   explanation of the script and its input and
-                                   output files.
-     --version            OPTIONAL [Off] Print software version number.  If
-                                   verbose mode is on, it also prints the
-                                   template version used to standard error.
-     --debug              OPTIONAL [Off] Debug mode.
+                                   with your suffix appended.  See --help for a
+                                   description of the output file format.
+     --force|--overwrite  OPTIONAL Force overwrite of existing output files.
+                                   Only used when the -o option is supplied.
+     --ignore             OPTIONAL Ignore critical errors & continue
+                                   processing.  (Errors will still be
+                                   reported.)  See --force to not exit when
+                                   existing output files are found.
+     --verbose            OPTIONAL Verbose mode.  Cannot be used with the quiet
+                                   flag.  Verbosity level can be increased by
+                                   supplying a number (e.g. --verbose 2) or by
+                                   supplying the --verbose flag multiple times.
+     --quiet              OPTIONAL Quiet mode.  Suppresses warnings and errors.
+                                   Cannot be used with the verbose or debug
+                                   flags.
+     --help|-?            OPTIONAL Help.  Print an explanation of the script
+                                   and its input/output files.
+     --version            OPTIONAL Print software version number.  If verbose
+                                   mode is on, it also prints the template
+                                   version used to standard error.
+     --debug              OPTIONAL Debug mode.  Adds debug output to STDERR and
+                                   prepends trace information to warning and
+                                   error messages.  Cannot be used with the
+                                   --quiet flag.  Debug level can be increased
+                                   by supplying a number (e.g. --debug 2) or by
+                                   supplying the --debug flag multiple times.
+     --noheader           OPTIONAL Suppress commented header output.  Without
+                                   this option, the script version, date/time,
+                                   and command-line information will be printed
+                                   at the top of all output files commented
+                                   with '#' characters.
 
 end_print
       }
@@ -1479,12 +1284,11 @@ sub verbose
     else
       {$overwrite_flag = 0}
 
-    #Ignore the overwrite flag if STDOUT will be mixed in
-    $overwrite_flag = 0 if(isStandardOutputToTerminal());
+#    #Ignore the overwrite flag if STDOUT will be mixed in
+#    $overwrite_flag = 0 if(isStandardOutputToTerminal());
 
     #Read in the message
-    error("\@_ is not initialized!") if(scalar(grep {!defined($_)} @_));
-    my $verbose_message = join('',@_);
+    my $verbose_message = join('',grep {defined($_)} @_);
 
     $overwrite_flag = 1 if(!$overwrite_flag && $verbose_message =~ /\r/);
 
@@ -1500,20 +1304,53 @@ sub verbose
 	$verbose_message =~ s/\r$//;
 	if(!$main::verbose_warning && $verbose_message =~ /\n|\t/)
 	  {
-	    warning("Hard returns and tabs cause overwrite mode to not work ",
-		    "properly.");
+	    warning('Hard returns and tabs cause overwrite mode to not work ',
+		    'properly.');
 	    $main::verbose_warning = 1;
 	  }
       }
     else
       {chomp($verbose_message)}
 
+    #If this message is not going to be over-written (i.e. we will be printing
+    #a \n after this verbose message), we can reset verbose_length to 0 which
+    #will cause $main::last_verbose_size to be 0 the next time this is called
     if(!$overwrite_flag)
       {$verbose_length = 0}
-    elsif($verbose_message =~ /\n([^\n]*)$/)
+    #If there were \r's in the verbose message submitted (after the last \n)
+    #Calculate the verbose length as the largest \r-split string
+    elsif($verbose_message =~ /\r[^\n]*$/)
+      {
+	my $tmp_message = $verbose_message;
+	$tmp_message =~ s/.*\n//;
+	($verbose_length) = sort {length($b) <=> length($a)}
+	  split(/\r/,$tmp_message);
+      }
+    #Otherwise, the verbose_length is the size of the string after the last \n
+    elsif($verbose_message =~ /([^\n]*)$/)
       {$verbose_length = length($1)}
-    else
-      {$verbose_length = length($verbose_message)}
+
+    #If the buffer is not being flushed, the verbose output doesn't start with
+    #a \n, and output is to the terminal, make sure we don't over-write any
+    #STDOUT output
+    #NOTE: This will not clean up verbose output over which STDOUT was written.
+    #It will only ensure verbose output does not over-write STDOUT output
+    #NOTE: This will also break up STDOUT output that would otherwise be on one
+    #line, but it's better than over-writing STDOUT output.  If STDOUT is going
+    #to the terminal, it's best to turn verbose off.
+    if(!$| && $verbose_message !~ /^\n/ && isStandardOutputToTerminal())
+      {
+	#The number of characters since the last flush (i.e. since the last \n)
+	#is the current cursor position minus the cursor position after the
+	#last flush (thwarted if user prints \r's in STDOUT)
+	my $num_chars = tell(STDOUT) - sysseek(STDOUT,0,1);
+
+	#If there have been characters printed since the last \n, prepend a \n
+	#to the verbose message so that we do not over-write the user's STDOUT
+	#output
+	if($num_chars > 0)
+	  {$verbose_message = "\n$verbose_message"}
+      }
 
     #Overwrite the previous verbose message by appending spaces just before the
     #first hard return in the verbose message IF THE VERBOSE MESSAGE DOESN'T
@@ -1558,52 +1395,64 @@ sub error
     return(0) if($quiet);
 
     #Gather and concatenate the error message and split on hard returns
-    my @error_message = split("\n",join('',@_));
-    pop(@error_message) if($error_message[-1] !~ /\S/);
+    my @error_message = split(/\n/,join('',grep {defined($_)} @_));
+    push(@error_message,'') unless(scalar(@error_message));
+    pop(@error_message) if(scalar(@error_message) > 1 &&
+			   $error_message[-1] !~ /\S/);
 
     $main::error_number++;
-
-    my $script = $0;
-    $script =~ s/^.*\/([^\/]+)$/$1/;
+    my $leader_string = "ERROR$main::error_number:";
 
     #Assign the values from the calling subroutines/main
-    my @caller_info = caller(0);
-    my $line_num = $caller_info[2];
-    my $caller_string = '';
-    my $stack_level = 1;
-    while(@caller_info = caller($stack_level))
+    my(@caller_info,$line_num,$caller_string,$stack_level,$script);
+    if($DEBUG)
       {
-	my $calling_sub = $caller_info[3];
-	$calling_sub =~ s/^.*?::(.+)$/$1/ if(defined($calling_sub));
-	$calling_sub = (defined($calling_sub) ? $calling_sub : 'MAIN');
-	$caller_string .= "$calling_sub(LINE$line_num):"
-	  if(defined($line_num));
+	$script = $0;
+	$script =~ s/^.*\/([^\/]+)$/$1/;
+	@caller_info = caller(0);
 	$line_num = $caller_info[2];
-	$stack_level++;
+	$caller_string = '';
+	$stack_level = 1;
+	while(@caller_info = caller($stack_level))
+	  {
+	    my $calling_sub = $caller_info[3];
+	    $calling_sub =~ s/^.*?::(.+)$/$1/ if(defined($calling_sub));
+	    $calling_sub = (defined($calling_sub) ? $calling_sub : 'MAIN');
+	    $caller_string .= "$calling_sub(LINE$line_num):"
+	      if(defined($line_num));
+	    $line_num = $caller_info[2];
+	    $stack_level++;
+	  }
+	$caller_string .= "MAIN(LINE$line_num):";
+	$leader_string .= "$script:$caller_string";
       }
-    $caller_string .= "MAIN(LINE$line_num):";
 
-    my $leader_string = "ERROR$main::error_number:$script:$caller_string ";
+    $leader_string .= ' ';
 
     #Figure out the length of the first line of the error
     my $error_length = length(($error_message[0] =~ /\S/ ?
 			       $leader_string : '') .
 			      $error_message[0]);
 
-    #Put location information at the beginning of each line of the message
+    #Put location information at the beginning of the first line of the message
+    #and indent each subsequent line by the length of the leader string
+    print STDERR ($leader_string,
+		  shift(@error_message),
+		  ($verbose &&
+		   defined($main::last_verbose_state) &&
+		   $main::last_verbose_state ?
+		   ' ' x ($main::last_verbose_size - $error_length) : ''),
+		  "\n");
+    my $leader_length = length($leader_string);
     foreach my $line (@error_message)
-      {print STDERR (($line =~ /\S/ ? $leader_string : ''),
+      {print STDERR (' ' x $leader_length,
 		     $line,
-		     ($verbose &&
-		      defined($main::last_verbose_state) &&
-		      $main::last_verbose_state ?
-		      ' ' x ($main::last_verbose_size - $error_length) : ''),
 		     "\n")}
 
     #Reset the verbose states if verbose is true
     if($verbose)
       {
-	$main::last_verbose_size = 0;
+	$main::last_verbose_size  = 0;
 	$main::last_verbose_state = 0;
       }
 
@@ -1623,10 +1472,38 @@ sub warning
     $main::warning_number++;
 
     #Gather and concatenate the warning message and split on hard returns
-    my @warning_message = split("\n",join('',@_));
-    pop(@warning_message) if($warning_message[-1] !~ /\S/);
+    my @warning_message = split(/\n/,join('',grep {defined($_)} @_));
+    push(@warning_message,'') unless(scalar(@warning_message));
+    pop(@warning_message) if(scalar(@warning_message) > 1 &&
+			     $warning_message[-1] !~ /\S/);
 
-    my $leader_string = "WARNING$main::warning_number: ";
+    my $leader_string = "WARNING$main::warning_number:";
+
+    #Assign the values from the calling subroutines/main
+    my(@caller_info,$line_num,$caller_string,$stack_level,$script);
+    if($DEBUG)
+      {
+	$script = $0;
+	$script =~ s/^.*\/([^\/]+)$/$1/;
+	@caller_info = caller(0);
+	$line_num = $caller_info[2];
+	$caller_string = '';
+	$stack_level = 1;
+	while(@caller_info = caller($stack_level))
+	  {
+	    my $calling_sub = $caller_info[3];
+	    $calling_sub =~ s/^.*?::(.+)$/$1/ if(defined($calling_sub));
+	    $calling_sub = (defined($calling_sub) ? $calling_sub : 'MAIN');
+	    $caller_string .= "$calling_sub(LINE$line_num):"
+	      if(defined($line_num));
+	    $line_num = $caller_info[2];
+	    $stack_level++;
+	  }
+	$caller_string .= "MAIN(LINE$line_num):";
+	$leader_string .= "$script:$caller_string";
+      }
+
+    $leader_string .= ' ';
 
     #Figure out the length of the first line of the error
     my $warning_length = length(($warning_message[0] =~ /\S/ ?
@@ -1634,19 +1511,24 @@ sub warning
 				$warning_message[0]);
 
     #Put leader string at the beginning of each line of the message
+    #and indent each subsequent line by the length of the leader string
+    print STDERR ($leader_string,
+		  shift(@warning_message),
+		  ($verbose &&
+		   defined($main::last_verbose_state) &&
+		   $main::last_verbose_state ?
+		   ' ' x ($main::last_verbose_size - $warning_length) : ''),
+		  "\n");
+    my $leader_length = length($leader_string);
     foreach my $line (@warning_message)
-      {print STDERR (($line =~ /\S/ ? $leader_string : ''),
+      {print STDERR (' ' x $leader_length,
 		     $line,
-		     ($verbose &&
-		      defined($main::last_verbose_state) &&
-		      $main::last_verbose_state ?
-		      ' ' x ($main::last_verbose_size - $warning_length) : ''),
 		     "\n")}
 
     #Reset the verbose states if verbose is true
     if($verbose)
       {
-	$main::last_verbose_size = 0;
+	$main::last_verbose_size  = 0;
 	$main::last_verbose_state = 0;
       }
 
@@ -1689,8 +1571,8 @@ sub getLine
 		       {
 			 $main::infile_line_buffer->{$file_handle}->{WARNED}
 			   = 1;
-			 warning("Carriage returns were found in your file ",
-				 "and replaced with hard returns");
+			 warning('Carriage returns were found in your file ',
+				 'and replaced with hard returns.');
 		       }
 		     split(/(?<=\n)/,$_);
 		   } <$file_handle>);
@@ -1707,8 +1589,8 @@ sub getLine
 		   {
 		     $main::infile_line_buffer->{$file_handle}->{WARNED}
 		       = 1;
-		     warning("Carriage returns were found in your file ",
-			     "and replaced with hard returns");
+		     warning('Carriage returns were found in your file ',
+			     'and replaced with hard returns.');
 		   }
 		 split(/(?<=\n)/,$_);
 	       } <$file_handle>);
@@ -1718,27 +1600,22 @@ sub getLine
     if(scalar(@{$main::infile_line_buffer->{$file_handle}->{FILE}}) == 0)
       {
 	my $line = <$file_handle>;
-	if(!eof($file_handle))
+	#The following is to deal with files that have the eof character at the
+	#end of the last line.  I may not have it completely right yet.
+	if(defined($line))
 	  {
 	    if($line =~ s/\r\n|\n\r|\r/\n/g &&
 	       !exists($main::infile_line_buffer->{$file_handle}->{WARNED}))
 	      {
 		$main::infile_line_buffer->{$file_handle}->{WARNED} = 1;
-		warning("Carriage returns were found in your file and ",
-			"replaced with hard returns");
+		warning('Carriage returns were found in your file and ',
+			'replaced with hard returns.');
 	      }
 	    @{$main::infile_line_buffer->{$file_handle}->{FILE}} =
 	      split(/(?<=\n)/,$line);
 	  }
 	else
-	  {
-	    #Do the \r substitution for the last line of files that have the
-	    #eof character at the end of the last line instead of on a line by
-	    #itself.  I tested this on a file that was causing errors for the
-	    #last line and it works.
-	    $line =~ s/\r/\n/g if(defined($line));
-	    @{$main::infile_line_buffer->{$file_handle}->{FILE}} = ($line);
-	  }
+	  {@{$main::infile_line_buffer->{$file_handle}->{FILE}} = ($line)}
       }
 
     #Shift off and return the first thing in the buffer for this file handle
@@ -1758,8 +1635,10 @@ sub debug
     $main::debug_number++;
 
     #Gather and concatenate the error message and split on hard returns
-    my @debug_message = split("\n",join('',@_));
-    pop(@debug_message) if($debug_message[-1] !~ /\S/);
+    my @debug_message = split(/\n/,join('',grep {defined($_)} @_));
+    push(@debug_message,'') unless(scalar(@debug_message));
+    pop(@debug_message) if(scalar(@debug_message) > 1 &&
+			   $debug_message[-1] !~ /\S/);
 
     #Assign the values from the calling subroutine
     #but if called from main, assign the values from main
@@ -1780,13 +1659,17 @@ sub debug
 			      $debug_message[0]);
 
     #Put location information at the beginning of each line of the message
+    print STDERR ($leader_string,
+		  shift(@debug_message),
+		  ($verbose &&
+		   defined($main::last_verbose_state) &&
+		   $main::last_verbose_state ?
+		   ' ' x ($main::last_verbose_size - $debug_length) : ''),
+		  "\n");
+    my $leader_length = length($leader_string);
     foreach my $line (@debug_message)
-      {print STDERR (($line =~ /\S/ ? $leader_string : ''),
+      {print STDERR (' ' x $leader_length,
 		     $line,
-		     ($verbose &&
-		      defined($main::last_verbose_state) &&
-		      $main::last_verbose_state ?
-		      ' ' x ($main::last_verbose_size - $debug_length) : ''),
 		     "\n")}
 
     #Reset the verbose states if verbose is true
@@ -1825,7 +1708,7 @@ sub markTime
     #Error check the time mark index sent in
     if($mark_index > (scalar(@$main::time_marks) - 1))
       {
-	error("Supplied time mark index is larger than the size of the ",
+	error('Supplied time mark index is larger than the size of the ',
 	      "time_marks array.\nThe last mark will be set.");
 	$mark_index = -1;
       }
@@ -1907,21 +1790,42 @@ sub sglob
   }
 
 
-sub printVersion
+sub getVersion
   {
+    my $full_version_flag = $_[0];
+    my $template_version_number = '1.38';
+    my $version_message = '';
+
+    #$software_version_number  - global
+    #$created_on_date          - global
+    #$verbose                  - global
+
     my $script = $0;
+    my $lmd = localtime((stat($script))[9]);
     $script =~ s/^.*\/([^\/]+)$/$1/;
-    print(($verbose ? "$script Version " : ''),
-	  $software_version_number,
-	  "\n");
-    verbose("Generated using perl_script_template.pl\n",
-	    "Version $template_version_number\n",
-	    "Robert W. Leach\n",
-	    "robleach\@lanl.gov\n",
-	    "5/8/2006\n",
-	    "Los Alamos National Laboratory\n",
-	    "Copyright 2006");
-    return(0);
+
+    if($created_on_date eq 'DATE HERE')
+      {$created_on_date = 'UNKNOWN'}
+
+    $version_message  = join((isStandardOutputToTerminal() ? "\n" : ' '),
+			     ("$script Version $software_version_number",
+			      " Created: $created_on_date",
+			      " Last modified: $lmd"));
+
+    if($full_version_flag)
+      {
+	$version_message .= (isStandardOutputToTerminal() ? "\n" : ' - ') .
+	  join((isStandardOutputToTerminal() ? "\n" : ' '),
+	       ('Generated using perl_script_template.pl ' .
+		"Version $template_version_number",
+		' Created: 5/8/2006',
+		' Author:  Robert W. Leach',
+		' Contact: robleach@ccr.buffalo.edu',
+		' Company: Center for Computational Research',
+		' Copyright 2008'));
+      }
+
+    return($version_message);
   }
 
 #This subroutine is a check to see if input is user-entered via a TTY (result
@@ -1934,3 +1838,24 @@ sub isStandardInputFromTerminal
 #considered and may defeat this subroutine.
 sub isStandardOutputToTerminal
   {return(-t STDOUT && select() eq 'main::STDOUT')}
+
+#This subroutine exits the current process.  Note, you must clean up after
+#yourself before calling this.  Does not exit is $ignore_errors is true.  Takes
+#the error number to supply to exit().
+sub quit
+  {
+    my $errno = $_[0];
+    if(!defined($errno))
+      {$errno = -1}
+    elsif($errno !~ /^[+\-]?\d+$/)
+      {
+	error("Invalid argument: [$errno].  Only integers are accepted.  Use ",
+	      "error() or warn() to supply a message, then call quit() with ",
+	      "an error number.");
+	$errno = -1;
+      }
+
+    debug("Exit status: [$errno].");
+
+    exit($errno) if(!$ignore_errors || $errno == 0);
+  }
