@@ -19,4 +19,4 @@ grep -v -E "aureus|epidermidis|saprophyticus" hit_table.txt > haemolyticus_hit_t
 ./commonGeneDeflines.pl *.lax-common -o .withdeflines
 grep -c Group *.withdeflines
 
-Note, the above example is a little dated, but it shows you how it works.  The script grep_combos.pl was created to replace the need for the repeated greps.  These commands will take a long time and you need to have blastall and formatdb installed on your machine and in your path.  The final numbers output by the last grep command are the seed numbers to use in the ven diagram.  Also, calculateVenn.pl will replace that last grep command as well.
+Note, the above example is a little dated, but it shows you how it works.  The script grep_combos.pl was created to replace the need for the repeated greps.  These commands will take a long time and you need to have blastall and formatdb installed on your machine and in your path.  The final numbers output by the last grep command are the seed numbers to use in the ven diagram, but calculateVenn.pl will replace that last grep command and calculate all the Venn numbers.
