@@ -1,0 +1,22 @@
+These scripts are the bulk of a pipeline which calculates VENN diagram numbers.  Here is an example of how to execute the pipeline:
+
+./bidirectional_blast.pl *.faa --verbose > hit_table.txt
+grep -v -E "epidermi|haemolyticus" hit_table.txt > aureus_saprophyticus_hit_table.txt
+grep -v -E "epidermi|saprophyticus" hit_table.txt > aureus_haemolyticus_hit_table.txt
+grep -v -E "epidermi|saprophyticus|haemolyticus" hit_table.txt > aureus_hit_table.txt
+grep -v -E "aureus|saprophyticus|haemolyticus" hit_table.txt > epidermidis_hit_table.txt
+grep -v -E "saprophyticus|haemolyticus" hit_table.txt > aureus_epidermidis_hit_table.txt
+grep -v -E "aureus|haemolyticus" hit_table.txt > epidermidis_saprophyticus_hit_table.txt
+grep -v -E "aureus|saprophyticus" hit_table.txt > epidermidis_haemolyticus_hit_table.txt
+grep -v -E "aureus|epidermidis" hit_table.txt > haemolyticus_saprophyticus_hit_table.txt
+grep -v -E "aureus" hit_table.txt > epidermidis_saprophyticus_haemolyticus_hit_table.txt
+grep -v -E "epidermidis" hit_table.txt > aureus_saprophyticus_haemolyticus_hit_table.txt
+grep -v -E "saprophyticus" hit_table.txt > aureus_epidermidis_haemolyticus_hit_table.txt
+grep -v -E "haemolyticus" hit_table.txt > aureus_epidermidis_saprophyticus_hit_table.txt
+grep -v -E "aureus|epidermidis|haemolyticus" hit_table.txt > saprophyticus_hit_table.txt
+grep -v -E "aureus|epidermidis|saprophyticus" hit_table.txt > haemolyticus_hit_table.txt
+./bidirectional_hit_filter.pl *hit_table.txt -p 35 -l .75 -e .00001 -o .lax-common --verbose
+./commonGeneDeflines.pl *.lax-common -o .withdeflines
+grep -c Group *.withdeflines
+
+Note, the above example is a little dated, but it shows you how it works.  The script grep_combos.pl was created to replace the need for the repeated greps.  These commands will take a long time and you need to have blastall and formatdb installed on your machine and in your path.  The final numbers output by the last grep command are the seed numbers to use in the ven diagram.  Also, calculateVenn.pl will replace that last grep command as well.
