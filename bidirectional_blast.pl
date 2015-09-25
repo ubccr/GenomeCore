@@ -685,7 +685,7 @@
 
 #These variables (in main) are used by printVersion()
 my $template_version_number = '1.33';
-my $software_version_number = '1.3';
+my $software_version_number = '1.4';
 
 ##
 ## Start Main
@@ -1269,7 +1269,9 @@ sub GetNextCombo
 
     #Define an upper limit for the last number in the combination
     my $upper_lim = $pool_size - 1;
-    my $cur_index = $#{@$combo};
+    debug("combo is a reference of type: [",ref($combo),
+	  "].  Should be an ARRAY reference.");
+    my $cur_index = $#{$combo};
 
     #Increment the last number of the combination if it is below the limit and
     #return true
@@ -1292,7 +1294,7 @@ sub GetNextCombo
     $combo->[$cur_index]++;
 
     #For every number in the combination after the one above
-    foreach(($cur_index+1)..$#{@$combo})
+    foreach(($cur_index+1)..$#{$combo})
       {
 	#Set its value equal to the one before it plus one
 	$combo->[$_] = $combo->[$_-1]+1;
