@@ -685,7 +685,7 @@
 
 #These variables (in main) are used by printVersion()
 my $template_version_number = '1.33';
-my $software_version_number = '1.5';
+my $software_version_number = '1.6';
 
 ##
 ## Start Main
@@ -697,13 +697,13 @@ use Getopt::Long;
 #Declare & initialize variables.  Provide default values here.
 my($outfile_suffix);#,$paralogs_suffix); #Not defined so a user can overwrite
                                          #the input file
-my @input_files         = ();
-my $current_output_file = '';
-my $help                = 0;
-my $version             = 0;
-my $force               = 0;
-my $evalue_cutoff       = 10**-30;
-my $length_ratio_cutoff = .9;
+my @input_files             = ();
+my $current_output_file     = '';
+my $help                    = 0;
+my $version                 = 0;
+my $force                   = 0;
+my $evalue_cutoff           = 10**-30;
+my $length_ratio_cutoff     = .9;
 my $percent_identity_cutoff = 10;
 my $use_reference           = 0;
 
@@ -868,6 +868,9 @@ foreach my $input_file (@input_files)
     my $num_sim_warnings     = 0;
     my $fragment_check       = {};
     my $indirect_recip_check = {};
+    my $query_check_hash     = {};
+    my $query_double_check   = {};
+    my $file_check_hash      = {};
 
     #For each line in the current input file
     while(getLine(*INPUT))
@@ -882,6 +885,15 @@ foreach my $input_file (@input_files)
 	($query_file,$subject_file,$query_id,$subject_id,$match_length_ratio,
 	 $evalue,$percent_identity,$link_id) = split(/ *\t */,$_);
 	$link_id = '' unless(defined($link_id));
+
+	unless(exists($query_check_hash->{$query_id}))
+	  {
+	    $query_check_hash->{$query_id}   = 0;
+	    $query_double_check->{$query_id} = 0;
+	  }
+
+	$file_check_hash->{$query_file}++;
+	$file_check_hash->{$subject_file}++;
 
 	#If the match length ratio was given as a percent instead of fractional
 	#value, convert it to a fraction.  This could fail if 2% was ever
@@ -940,7 +952,17 @@ foreach my $input_file (@input_files)
 		  EVALUE      => $evalue,
 		  IDENTITY    => $percent_identity,
 		  LINKID      => $link_id};
+
+	     $query_check_hash->{$query_id}++;
 	   }
+	else
+	  {
+	    debug("Passing up hit: [$query_file, $subject_file, $query_id, ",
+		  "$subject_id, $match_length_ratio, $evalue, ",
+		  "$percent_identity].")
+	      if($query_check_hash->{$query_id} == 0);
+	    $query_double_check->{$query_id}++;
+	  }
 
 	#If this is an indirect link between two fragments (This assumes
 	#there's no more than 2 lines with the same combination of files and
@@ -1037,6 +1059,31 @@ foreach my $input_file (@input_files)
 	      'are the indirect link IDs (from the last column of the input ',
 	      "data) without reciprocal hits: [$err_string].");
 	undef($indirect_recip_check);
+      }
+
+    #If this file pair is for finding paralogs
+    if(scalar(keys(%$file_check_hash)) == 1)
+      {
+	#Make sure every query has a good hit
+	my @missing_query_ids = grep {$query_check_hash->{$_} == 0}
+	  keys(%$query_check_hash);
+	my @passed_up = grep {exists($query_double_check->{$_})}
+	  @missing_query_ids;
+	if(scalar(@missing_query_ids))
+	  {
+	    warning("These [",scalar(@missing_query_ids),"] queries out of [",
+		    scalar(keys(%$query_check_hash)),"], [",scalar(@passed_up),
+		    "] of which had hits but all of them (including hits to ",
+		    "self) failed the filtering criteria: [",
+		    (join(',',(scalar(@missing_query_ids) > 5 && !$DEBUG ?
+			       (@missing_query_ids[0..4],'...') :
+			       @missing_query_ids))),
+		    "].  To reclaim these sequences, you must rerun and ",
+		    "either loosen the filtering parameters, or rerun blast ",
+		    "and increase its -v/-b parameters.  Also, check the ",
+		    "validity of the blast result files to make sure they ",
+		    "are complete.");
+	  }
       }
 
     close(INPUT);
@@ -1321,9 +1368,12 @@ foreach my $input_file (@input_files)
 				      ->{$seed_query_genome}
 					->{$seed_query_gene}}));
 
+	    debug("Considering candidates as a paralogous set: [",
+		  join(',',@tparalogs),"].");
+
 	    #Make sure all paralogs hit each other
 	    my @paralogs = ($seed_query_gene);
-	    foreach my $paralog1 (@paralogs)
+	    foreach my $paralog1 (@tparalogs)
 	      {
 		next if($paralog1 eq $seed_query_gene);
 		my $match_missing = 0;
@@ -1440,13 +1490,12 @@ foreach my $input_file (@input_files)
 		error("There appear to be [$num_problems] genes in the ",
 		      "genome set for genome: [$sgenome] that can belong to ",
 		      "multiple paralogous sets because some genes which do ",
-		      "not bidirectionally hit each other hit the same ",
-		      "gene.  This suggests that you should make your hit ",
-		      "cutoffs more stringent or that your blast results ",
-		      "contain short hits (which cannot be filtered by this ",
-		      "script - they must be filtered in previous steps).  ",
-		      "These are the genes which you will find in multiple ",
-		      "groups: [",
+		      "not bidirectionally hit each other.  This suggests ",
+		      "that you should make your hit cutoffs more stringent ",
+		      "or that your blast results contain short hits (which ",
+		      "cannot be filtered by this script - they must be ",
+		      "filtered in previous steps).  These are the genes ",
+		      "which you will find in multiple groups: [",
 		      join(',',grep {$seen_hash->{$sgenome}->{$_} > 1}
 			   keys(%{$seen_hash->{$sgenome}})),
 		      "].");
@@ -1484,6 +1533,8 @@ foreach my $input_file (@input_files)
       }
     else #Fully bidirectional
       {
+	debug("Fully bidirectional mode, engaged.");
+
 	my $commons_found = 0;
 
 	#For each gene in the seed genome that had a hit to one of the other
@@ -1506,8 +1557,7 @@ foreach my $input_file (@input_files)
 
 		      if(#If it's not a hit to self
 			 ($seed_query_genome ne $subject_genome ||
-			  ($seed_query_genome eq $subject_genome &&
-			   $seed_query_gene ne $subject_gene)) &&
+			  $seed_query_gene ne $subject_gene) &&
 			 #And the reciprocal hit exists (above cutoffs is
 			 #implied by the fact it exists)
 			 exists($hit_hash->{$subject_genome}
@@ -1519,13 +1569,19 @@ foreach my $input_file (@input_files)
 				"$subject_gene \@ ",
 				$hit_hash->{$seed_query_genome}
 				->{$subject_genome}->{$seed_query_gene}
-				->{$subject_gene}->{EVALUE},"].");
+				->{$subject_gene}->{EVALUE},", ",
+				$hit_hash->{$seed_query_genome}
+				->{$subject_genome}->{$seed_query_gene}
+				->{$subject_gene}->{LENGTHRATIO},"].");
 			  $genome_check->{$subject_genome} = 1;
 			  push(@{$ordered_hits->{$subject_genome}},
 			       [$subject_gene,
 				$hit_hash->{$seed_query_genome}
 				->{$subject_genome}->{$seed_query_gene}
-				->{$subject_gene}->{EVALUE}]);
+				->{$subject_gene}->{EVALUE},
+			        $hit_hash->{$seed_query_genome}
+				->{$subject_genome}->{$seed_query_gene}
+				->{$subject_gene}->{LENGTHRATIO}]);
 			}
 		    }
 	      }
@@ -1535,10 +1591,12 @@ foreach my $input_file (@input_files)
 		    #This is for when we're outputting paralogs for one genome
 		    $num_genomes != 1);
 
-	    #Order the subject hits by e-value of the hit from the seed
+	    #Order the subject hits by deviation from a length ratio of 1, then
+	    #by e-value of the hit from the seed
 	    foreach my $genome (keys(%$ordered_hits))
 	      {@{$ordered_hits->{$genome}} =
-		 sort {$a->[1] <=> $b->[1]} @{$ordered_hits->{$genome}}}
+		 sort {abs(1-$a->[2]) <=> abs(1-$b->[2]) ||
+			 $a->[1] <=> $b->[1]} @{$ordered_hits->{$genome}}}
 
 	    #This is where we will try to build our bidirectional set
 	    my $candidates = {$seed_query_genome => {$seed_query_gene => 1}};
@@ -1555,6 +1613,9 @@ foreach my $input_file (@input_files)
 	    my $ordered_keys = [sort {$a cmp $b}
 				grep {$_ ne $seed_query_genome}
 				keys(%$ordered_hits)];
+
+	    debug("Inspecting [",join(',',@$sizes),"] subject hits (for each ",
+		  "subject genome) from the seed gene: [$seed_query_gene].");
 
 	    #Cycle through all possible combinations of non-seed genome genes
 	    #that the seed gene hit to see if everything hit eachother above
@@ -1617,7 +1678,7 @@ foreach my $input_file (@input_files)
 			debug("SUBJECT: [$ordered_keys->[$genome_index], ",
 			      $ordered_hits->{$ordered_keys->[$genome_index]}
 			      ->[$gene_index]->[0],
-			      "]. [$genome_index] [$ordered_keys->[$genome_index]] [$gene_index] [$gene_index] [$ordered_hits->{$ordered_keys->[$genome_index]}->[$gene_index]]");
+			      "]. [$genome_index] [$ordered_keys->[$genome_index]] [$gene_index] [$gene_index] [$ordered_hits->{$ordered_keys->[$genome_index]}->[$gene_index]->[0]]");
 			#Set the candidate's genome and gene keys based on the
 			#index stored in the combo array.  This should set the
 			#bidirectional set that was found.
@@ -1633,10 +1694,17 @@ foreach my $input_file (@input_files)
 
 	    next unless($all_bidirec);
 
-	    #Put all the hits in an array ordered by E Value
-	    my @other_hits = sort {$a->[1] <=> $b->[1]}
-	      map {[$_,@{$ordered_hits->{$_}}]}
+	    #Put all the hits in an array ordered by deviation from a length
+	    #ratio of 1, then E Value. This will mix the hits from the various
+	    #genomes together.
+	    my @other_hits = sort {abs(1-$a->[1]->[2]) <=>
+				     abs(1-$b->[1]->[2]) ||
+				       $a->[1]->[1] <=> $b->[1]->[1]}
+	      map {my $gnm=$_;map {[$gnm,$_]} @{$ordered_hits->{$_}}}
 		keys(%$ordered_hits);
+
+	    debug("Fully bidirectional seed contructed.  Trying to add more ",
+		  "members.");
 
 	    #We know that everything we have so far is fully bidirectional and
 	    #consists of the best hits (greedily constructed).  Now we want to
@@ -1647,7 +1715,11 @@ foreach my $input_file (@input_files)
 		#Skip this hit if it was added before above
 		next if(exists($candidates->{$next_best_hit->[0]}) &&
 			exists($candidates->{$next_best_hit->[0]}
-			       ->{$next_best_hit->[1]}));
+			       ->{$next_best_hit->[1]->[0]}));
+
+		debug("Additional candidate: [$next_best_hit->[0], ",
+		      "$next_best_hit->[1]->[0]].");
+
 		my $another_bidirec = 1;
 		foreach my $subject_genome (keys(%$candidates))
 		  {
@@ -1656,12 +1728,12 @@ foreach my $input_file (@input_files)
 		      {
 			if(#Forward Hit
 			   !exists($hit_hash->{$next_best_hit->[0]}
-				   ->{$subject_genome}->{$next_best_hit->[1]}
+				   ->{$subject_genome}->{$next_best_hit->[1]->[0]}
 				   ->{$candidate}) ||
 			   #Reciprocal Hit
 			   !exists($hit_hash->{$subject_genome}
 				   ->{$next_best_hit->[0]}->{$candidate}
-				   ->{$next_best_hit->[1]}))
+				   ->{$next_best_hit->[1]->[0]}))
 			  {
 			    $another_bidirec = 0;
 			    last;
@@ -1673,8 +1745,12 @@ foreach my $input_file (@input_files)
 		#If the gene stored in next_best_hit bidirectionally hits
 		#everything, add it to the set
 		if($another_bidirec)
-		  {$candidates->{$next_best_hit->[0]}->{$next_best_hit->[1]} =
-		     1}
+		  {
+		    debug("Adding another member to the set: ",
+			  "[$next_best_hit->[0], $next_best_hit->[1]->[0]].");
+		    $candidates->{$next_best_hit->[0]}->{$next_best_hit->[1]
+							 ->[0]} = 1;
+		  }
 	      }
 
 	    if($all_bidirec)
@@ -1869,7 +1945,7 @@ sub GetNextIndepCombo
         return(1);
       }
 
-    my $cur_index = $#{@$combo};
+    my $cur_index = $#{$combo};
 
     #Increment the last number of the combination if it is below the pool size
     #(minus 1 because we start from zero) and return true
@@ -1900,7 +1976,7 @@ sub GetNextIndepCombo
     $combo->[$cur_index]++;
 
     #For every number in the combination after the one above
-    foreach(($cur_index+1)..$#{@$combo})
+    foreach(($cur_index+1)..$#{$combo})
       {
 	#Set its value equal to 0
 	$combo->[$_] = 0;
