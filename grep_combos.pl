@@ -1804,7 +1804,7 @@ sub GetNextCombo
 
     #Define an upper limit for the last number in the combination
     my $upper_lim = $pool_size - 1;
-    my $cur_index = $#{@$combo};
+    my $cur_index = $#{$combo};
 
     #Increment the last number of the combination if it is below the limit and
     #return true
@@ -1827,7 +1827,7 @@ sub GetNextCombo
     $combo->[$cur_index]++;
 
     #For every number in the combination after the one above
-    foreach(($cur_index+1)..$#{@$combo})
+    foreach(($cur_index+1)..$#{$combo})
       {
 	#Set its value equal to the one before it plus one
 	$combo->[$_] = $combo->[$_-1]+1;
