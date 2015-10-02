@@ -685,7 +685,7 @@
 
 #These variables (in main) are used by printVersion()
 my $template_version_number = '1.33';
-my $software_version_number = '1.4';
+my $software_version_number = '1.5';
 
 ##
 ## Start Main
@@ -707,6 +707,11 @@ my $blast_params        = '-v 20 -b 20 -e 100 -F F';
 my $program             = 'blastp';
 my $parse_only          = 0;
 my $command_file        = '';
+my $compress_mode       = 0;  #Uses the grep below when non-zero
+my $grep_blast_command  = 'grep -E "Query=|[0-9] letters|^>|Expect = |' .
+  'Identities = |Length = "';
+my $skip_format         = 0;
+my $skip_validity_check = 0;
 
 #These variables (in main) are used by the following subroutines:
 #verbose, error, warning, debug, printVersion, getCommand and usage
@@ -720,6 +725,9 @@ my $GetOptHash =
    'b|blast-params=s'   => \$blast_params,           #OPTIONAL [-v 20 -b 20
                                                      # -e 100 -F F]
    'parse-only!'        => \$parse_only,             #OPTIONAL [Off]
+   'shrink-blast-output!' => \$compress_mode,        #OPTIONAL [Off]
+   'skip-validity-check!' => \$skip_validity_check,  #OPTIONAL [Off]
+   'skip-format!'       => \$skip_format,            #OPTIONAL [Off]
    'i|input-file=s'     => sub {push(@input_files,   #REQUIRED unless <> is
 				     sglob($_[1]))}, #         supplied
    '<>'                 => sub {push(@input_files,   #REQUIRED unless -i is
@@ -807,10 +815,6 @@ if(!$force && defined($outfile_suffix))
       }
   }
 
-if(isStandardOutputToTerminal() && !defined($outfile_suffix))
-  {verbose("NOTE: VerboseOverMe functionality has been altered to yield ",
-	   "clean STDOUT output.")}
-
 my $exe_check = `which $blast_command`;
 if($exe_check eq '')
   {error("Blastall command not found: [$blast_command].")}
@@ -835,7 +839,6 @@ my $error_flag         = 0;
 my $command            = '';
 my $check_file_names   = {};
 my $dupe_id_error      = 0;
-my $defline_hash       = {};
 my $blast_result_files = {};
 
 if($command_file ne '')
@@ -849,19 +852,21 @@ if($command_file ne '')
 
 foreach my $input_file (@input_files)
   {
-    my $protein_bool = ($program eq 'blastp' || $program eq 'blastx' ?
-			'T' : 'F');
-    $command = "$format_command -p $protein_bool -i $input_file";
-    verbose($command,"\n");
-    `$command`;
-    if($?)
+    unless($skip_format)
       {
-	$error_flag = 1;
-	error("Format of [$input_file] failed with message: [$!].  The ",
-	      "command executed was: [$command].");
+	my $protein_bool = ($program eq 'blastp' || $program eq 'blastx' ?
+			    'T' : 'F');
+	$command = "$format_command -p $protein_bool -i $input_file";
+	verbose($command,"\n");
+	`$command`;
+	if($?)
+	  {
+	    $error_flag = 1;
+	    error("Format of [$input_file] failed with message: [$!].  The ",
+		  "command executed was: [$command].");
+	  }
       }
 
-    verbose("BLASTING $input_file against $input_file") unless($parse_only);
     my $file_name    =  $input_file;
     $file_name       =~ s/.*\///;
     $blast_result_files->{"$input_file.$file_name.br"} =
@@ -876,12 +881,18 @@ foreach my $input_file (@input_files)
     elsif(!$parse_only)
       {
 	$command  = "$blast_command -i $input_file -d $input_file -p ";
-	$command .= "$program $blast_params > $input_file.$file_name.br";
-	verbose($command,"\n");
+	$command .= "$program $blast_params";
+	$command .= " | $grep_blast_command" if($compress_mode);
+	$command .= " > $input_file.$file_name.br";
+
 	if($command_file ne '')
-	  {print COMMANDS ("$command\n")}
+	  {
+	    verbose("GENERATING $input_file vs $input_file BLAST COMMAND");
+	    print COMMANDS ("$command\n");
+	  }
 	else
 	  {
+	    verbose($command,"\n");
 	    `$command`;
 	    if($?)
 	      {
@@ -897,53 +908,54 @@ foreach my $input_file (@input_files)
     $file_name =~ s/.*\///;
     $check_file_names->{$file_name}++;
 
-    #Make sure the sequence IDs are unique
-    my $check_ids = {};
-    #Open the input file
-    if(!open(INPUT,$input_file))
+    unless($skip_validity_check)
       {
-	#Report an error and iterate if there was an error
-	error("Unable to open input file: [$input_file]\n$!");
-	next;
-      }
-    else
-      {verboseOverMe("[",
-		     ($input_file eq '-' ? 'STDIN' : $input_file),
-		     "] Opened input file.")}
-
-    my $line_num = 0;
-
-    #For each line in the current input file
-    while(getLine(*INPUT))
-      {
-	$line_num++;
-	verboseOverMe("[",
-		      ($input_file eq '-' ? 'STDIN' : $input_file),
-		      "] Reading line: [$line_num].");
-
-	if(/>\s*(\S+)/)
+	#Make sure the sequence IDs are unique
+	my $check_ids = {};
+	#Open the input file
+	if(!open(INPUT,$input_file))
 	  {
-	    my $id = $1;
-	    $check_ids->{$id}++;
-	    if(/>\s*(\S.*)$/)
-	      {$defline_hash->{$file_name}->{$id} = $1}
+	    #Report an error and iterate if there was an error
+	    error("Unable to open input file: [$input_file]\n$!");
+	    next;
 	  }
-      }
+	else
+	  {verboseOverMe("[",
+			 ($input_file eq '-' ? 'STDIN' : $input_file),
+			 "] Opened input file.")}
 
-    close(INPUT);
+	my $line_num = 0;
 
-    verbose("[",
-	    ($input_file eq '-' ? 'STDIN' : $input_file),
-	    '] Input file done.  Time taken: [',
-	    scalar(markTime()),
-	    " Seconds].");
+	#For each line in the current input file
+	while(getLine(*INPUT))
+	  {
+	    $line_num++;
+	    verboseOverMe("[",
+			  ($input_file eq '-' ? 'STDIN' : $input_file),
+			  "] Reading line: [$line_num].");
 
-    if(scalar(grep {$_ > 1} values(%$check_ids)))
-      {
-	$dupe_id_error = 1;
-	error("You have duplicate keys in fasta file: [$input_file]: [",
-	      join(',',grep {$check_ids->{$_} > 1} keys(%$check_ids)),
-	      "].");
+	    if(/>\s*(\S+)/)
+	      {
+		my $id = $1;
+		$check_ids->{$id}++;
+	      }
+	  }
+
+	close(INPUT);
+
+	verbose("[",
+		($input_file eq '-' ? 'STDIN' : $input_file),
+		'] Input file done.  Time taken: [',
+		scalar(markTime()),
+		" Seconds].");
+
+	if(scalar(grep {$_ > 1} values(%$check_ids)))
+	  {
+	    $dupe_id_error = 1;
+	    error("You have duplicate keys in fasta file: [$input_file]: [",
+		  join(',',grep {$check_ids->{$_} > 1} keys(%$check_ids)),
+		  "].");
+	  }
       }
   }
 
@@ -968,9 +980,6 @@ if(scalar(grep {$_ > 1} values(%$check_file_names)))
 $error_flag  = 0;
 while(GetNextCombo($combo_array,2,scalar(@input_files)))
   {
-    verbose("BLASTING ",
-	    join(" against ",(map {$input_files[$_]} @$combo_array)),
-	    "\n") unless($parse_only);
     my $query_file   =  $input_files[$combo_array->[0]];
     my $subject_file =  $input_files[$combo_array->[1]];
     my $file_name    =  $subject_file;
@@ -989,12 +998,18 @@ while(GetNextCombo($combo_array,2,scalar(@input_files)))
     elsif(!$parse_only)
       {
 	$command  = "$blast_command -i $query_file -d $subject_file -p ";
-	$command .= "$program $blast_params > $query_file.$file_name.br";
-	verbose($command,"\n");
+	$command .= "$program $blast_params";
+	$command .= " | $grep_blast_command" if($compress_mode);
+	$command .= " > $query_file.$file_name.br";
+
 	if($command_file ne '')
-	  {print COMMANDS ("$command\n")}
+	  {
+	    verbose("GENERATING $query_file vs $subject_file BLAST COMMAND");
+	    print COMMANDS ("$command\n");
+	  }
 	else
 	  {
+	    verbose($command,"\n");
 	    `$command`;
 	    if($?)
 	      {
@@ -1005,9 +1020,6 @@ while(GetNextCombo($combo_array,2,scalar(@input_files)))
 	  }
       }
 
-    verbose("BLASTING ",
-	    join(" against ",reverse(map {$input_files[$_]} @$combo_array)),
-	    "\n") unless($parse_only);
     $query_file   = $input_files[$combo_array->[1]];
     $subject_file = $input_files[$combo_array->[0]];
     $file_name    = $subject_file;
@@ -1026,12 +1038,18 @@ while(GetNextCombo($combo_array,2,scalar(@input_files)))
     elsif(!$parse_only)
       {
 	$command  = "$blast_command -i $query_file -d $subject_file -p ";
-	$command .= "$program $blast_params > $query_file.$file_name.br";
-	verbose($command,"\n");
+	$command .= "$program $blast_params";
+	$command .= " | $grep_blast_command" if($compress_mode);
+	$command .= " > $query_file.$file_name.br";
+
 	if($command_file ne '')
-	  {print COMMANDS ("$command\n")}
+	  {
+	    verbose("GENERATING $query_file vs $subject_file BLAST COMMAND");
+	    print COMMANDS ("$command\n");
+	  }
 	else
 	  {
+	    verbose($command,"\n");
 	    `$command`;
 	    if($?)
 	      {
@@ -1428,6 +1446,27 @@ end_print
                                    using a subset of input files.  You still
                                    supply the fasta files as input and the
                                    blast file names will be reconstructed.
+     --shrink-blast-      OPTIONAL [Off] This flag will cause the blastall
+       output                      output to be filtered to contain only the
+                                   lines necessary for creating the output
+                                   file.  The purpose is to save space because
+                                   the information provided by the alignments
+                                   (blastall's -v option) is necessary, but can
+                                   bloat the blast output file to be very
+                                   large.  This option will significantly
+                                   reduce the disk space taken, but the blast
+                                   output files will be less useful for manual
+                                   inspection.
+     --skip-validity-     OPTIONAL [Off] Do not check the fasta files for
+       check                       parsability and uniqueness of sequence IDs.
+                                   Only use this option if you are re-running
+                                   a file that you've run successfully before.
+     --skip-format        OPTIONAL [Off] Do not run formatdb to create the
+                                   blast databases.  Only use this option if
+                                   you are re-running this script and the blast
+                                   databases have already been validly created
+                                   in a previous run.  The purpose of this
+                                   option is to save time on a rerun.
      -o|--outfile-suffix  OPTIONAL [nothing] This suffix is added to the input
                                    file names to use as output files.
                                    Redirecting a file into this script will
@@ -1464,30 +1503,73 @@ end_print
 ## printed here.  However, specifying a hard return as the first character will
 ## override the status of the last line printed and keep it.  Global variables
 ## keep track of print length so that previous lines can be cleanly
-## overwritten.
+## overwritten.  Note, this subroutine buffers output until $verbose is defined
+## in main.  The buffer will be emptied the first time verbose() is called
+## after $verbose has been defined.  The purpose of this is to still output
+## verbose messages that were generated before the command line --verbose flag
+## has been processed.
 ##
 sub verbose
   {
-    return(0) unless($verbose);
+    if(defined($verbose) && !$verbose)
+      {
+	flushStderrBuffer() if(defined($main::stderr_buffer));
+	return(0);
+      }
 
-    #Read in the first argument and determine whether it's part of the message
-    #or a value for the overwrite flag
-    my $overwrite_flag = $_[0];
+    #Grab the options from the parameter array
+    my $opts           = getSubOpts(@_);
+    my $overwrite_flag = (exists($opts->{OVERME}) && defined($opts->{OVERME}) ?
+			  $opts->{OVERME} : 0);
+    my $message_level  = (exists($opts->{LEVEL}) && defined($opts->{LEVEL}) ?
+			  $opts->{LEVEL} : 1);
+    my $frequency      =  (exists($opts->{FREQUENCY}) &&
+			   defined($opts->{FREQUENCY}) &&
+			   $opts->{FREQUENCY} > 0 ? $opts->{FREQUENCY} : 1);
 
-    #If a flag was supplied as the first parameter (indicated by a 0 or 1 and
-    #more than 1 parameter sent in)
-    if(scalar(@_) > 1 && ($overwrite_flag eq '0' || $overwrite_flag eq '1'))
-      {shift(@_)}
-    else
-      {$overwrite_flag = 0}
+    if($frequency =~ /\./)
+      {
+	warning("The frequency value: [$frequency] must be an integer (e.g. ",
+		"print every 100th line).");
+	$frequency = ($frequency < 1 ? 1 : int($frequency));
+      }
 
-    #Ignore the overwrite flag if STDOUT will be mixed in
-    $overwrite_flag = 0 if(isStandardOutputToTerminal());
+    #If we're not printing every one of these verbose messages
+    if($frequency > 1)
+      {
+	#Determine what line the verbose call was made from so we can track
+	#how many times it has been called
+	my(@caller_info,$line_num);
+	my $stack_level = 0;
+	while(@caller_info = caller($stack_level))
+	  {
+	    $line_num = $caller_info[2];
+	    last if(defined($line_num));
+	    $stack_level++;
+	  }
 
-    #Read in the message
-    error("\@_ is not initialized!") if(scalar(grep {!defined($_)} @_));
-    my $verbose_message = join('',@_);
+	#Initialize the frequency hash to track number of calls from this line
+	#of code
+	if(!defined($main::verbose_freq_hash))
+	  {$main::verbose_freq_hash->{$line_num} = 1}
+	else
+	  {$main::verbose_freq_hash->{$line_num}++}
 
+	#If the number of calls is evenly divisible by the frequency
+	return(0) if($main::verbose_freq_hash->{$line_num} % $frequency != 0);
+      }
+
+    #Return if $verbose is greater than a negative level at which this message
+    #is printed or if $verbose is less than a positive level at which this
+    #message is printed.  Negative levels are for template diagnostics.
+    return(0) if(defined($verbose) &&
+		 (($message_level < 0 && $verbose > $message_level) ||
+		  ($message_level > 0 && $verbose < $message_level)));
+
+    #Grab the message from the parameter array
+    my $verbose_message = join('',grep {defined($_) && ref($_) eq ''} @_);
+
+    #Turn on the overwrite flag automatically if carriage returns are found
     $overwrite_flag = 1 if(!$overwrite_flag && $verbose_message =~ /\r/);
 
     #Initialize globals if not done already
@@ -1502,20 +1584,60 @@ sub verbose
 	$verbose_message =~ s/\r$//;
 	if(!$main::verbose_warning && $verbose_message =~ /\n|\t/)
 	  {
-	    warning("Hard returns and tabs cause overwrite mode to not work ",
-		    "properly.");
+	    warning('Hard returns and tabs cause overwrite mode to not work ',
+		    'properly.');
 	    $main::verbose_warning = 1;
 	  }
       }
     else
       {chomp($verbose_message)}
 
+    #If this message is not going to be over-written (i.e. we will be printing
+    #a \n after this verbose message), we can reset verbose_length to 0 which
+    #will cause $main::last_verbose_size to be 0 the next time this is called
     if(!$overwrite_flag)
       {$verbose_length = 0}
-    elsif($verbose_message =~ /\n([^\n]*)$/)
+    #If there were \r's in the verbose message submitted (after the last \n)
+    #Calculate the verbose length as the largest \r-split string
+    elsif($verbose_message =~ /\r[^\n]*$/)
+      {
+	my $tmp_message = $verbose_message;
+	$tmp_message =~ s/.*\n//;
+	($verbose_length) = sort {$b <=> $a} map {length($_)}
+	  split(/\r/,$tmp_message);
+      }
+    #Otherwise, the verbose_length is the size of the string after the last \n
+    elsif($verbose_message =~ /([^\n]*)$/)
       {$verbose_length = length($1)}
-    else
-      {$verbose_length = length($verbose_message)}
+
+    #If the buffer is not being flushed, the verbose output doesn't start with
+    #a \n, and output is to the terminal, make sure we don't over-write any
+    #STDOUT output
+    #NOTE: This will not clean up verbose output over which STDOUT was written.
+    #It will only ensure verbose output does not over-write STDOUT output
+    #NOTE: This will also break up STDOUT output that would otherwise be on one
+    #line, but it's better than over-writing STDOUT output.  If STDOUT is going
+    #to the terminal, it's best to turn verbose off.
+    if(!$| && $verbose_message !~ /^\n/ && isStandardOutputToTerminal())
+      {
+	#The number of characters since the last flush (i.e. since the last \n)
+	#is the current cursor position minus the cursor position after the
+	#last flush (thwarted if user prints \r's in STDOUT)
+	#NOTE:
+	#  tell(STDOUT) = current cursor position
+	#  sysseek(STDOUT,0,1) = cursor position after last flush (or undef)
+	my $num_chars = sysseek(STDOUT,0,1);
+	if(defined($num_chars))
+	  {$num_chars = tell(STDOUT) - $num_chars}
+	else
+	  {$num_chars = 0}
+
+	#If there have been characters printed since the last \n, prepend a \n
+	#to the verbose message so that we do not over-write the user's STDOUT
+	#output
+	if($num_chars > 0)
+	  {$verbose_message = "\n$verbose_message"}
+      }
 
     #Overwrite the previous verbose message by appending spaces just before the
     #first hard return in the verbose message IF THE VERBOSE MESSAGE DOESN'T
@@ -1534,9 +1656,25 @@ sub verbose
     #hard return.  This tells verbose() to not overwrite the last line that was
     #printed in overwrite mode.
 
-    #Print the message to standard error
-    print STDERR ($verbose_message,
-		  ($overwrite_flag ? "\r" : "\n"));
+    if(defined($verbose))
+      {
+	#Flush the buffer if it is defined
+	flushStderrBuffer() if(defined($main::stderr_buffer));
+
+	#Print the current message to standard error
+	print STDERR ($verbose_message,
+		      ($overwrite_flag ? "\r" : "\n"));
+      }
+    else
+      {
+	#Store the message in the stderr buffer until $verbose has been defined
+	#by the command line options (using Getopts::Long)
+	push(@{$main::stderr_buffer},
+	     ['verbose',
+	      $message_level,
+	      join('',($verbose_message,
+		       ($overwrite_flag ? "\r" : "\n")))]);
+      }
 
     #Record the state
     $main::last_verbose_size  = $verbose_length;
@@ -1547,7 +1685,29 @@ sub verbose
   }
 
 sub verboseOverMe
-  {verbose(1,@_)}
+  {verbose({OVERME=>1},@_)}
+
+#Copies all hash arguments' contents from the parameter array into 1 hash.
+#All other arguments must be scalars - otherwise generates an error
+sub getSubOpts
+  {
+    my $opts = {};
+    foreach my $opthash (grep {defined($_) && ref($_) eq 'HASH'} @_)
+      {
+	foreach my $optname (keys(%$opthash))
+	  {
+	    if(exists($opts->{$optname}))
+	      {error("Multiple options with the same name: [$optname].  ",
+		     "Overwriting.")}
+	    $opts->{$optname} = $opthash->{$optname};
+	  }
+      }
+
+    if(scalar(grep {defined($_) && ref($_) ne 'HASH' && ref($_) ne ''} @_))
+      {error("Non-hash and non-scalar arguments encountered.")}
+
+    return($opts);
+  }
 
 ##
 ## Subroutine that prints errors with a leading program identifier containing a
