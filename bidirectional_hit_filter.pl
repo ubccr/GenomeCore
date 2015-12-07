@@ -685,7 +685,7 @@
 
 #These variables (in main) are used by printVersion()
 my $template_version_number = '1.33';
-my $software_version_number = '1.6';
+my $software_version_number = '1.7';
 
 ##
 ## Start Main
@@ -1677,8 +1677,11 @@ foreach my $input_file (@input_files)
 		      {
 			debug("SUBJECT: [$ordered_keys->[$genome_index], ",
 			      $ordered_hits->{$ordered_keys->[$genome_index]}
-			      ->[$gene_index]->[0],
-			      "]. [$genome_index] [$ordered_keys->[$genome_index]] [$gene_index] [$gene_index] [$ordered_hits->{$ordered_keys->[$genome_index]}->[$gene_index]->[0]]");
+			      ->[$gene_index]->[0],"]. [$genome_index] [",
+			      "$ordered_keys->[$genome_index]] [$gene_index] ",
+			      "[$gene_index] [",
+			      $ordered_hits->{$ordered_keys->[$genome_index]}
+			      ->[$gene_index]->[0],"]");
 			#Set the candidate's genome and gene keys based on the
 			#index stored in the combo array.  This should set the
 			#bidirectional set that was found.
@@ -1728,7 +1731,8 @@ foreach my $input_file (@input_files)
 		      {
 			if(#Forward Hit
 			   !exists($hit_hash->{$next_best_hit->[0]}
-				   ->{$subject_genome}->{$next_best_hit->[1]->[0]}
+				   ->{$subject_genome}->{$next_best_hit->[1]
+							 ->[0]}
 				   ->{$candidate}) ||
 			   #Reciprocal Hit
 			   !exists($hit_hash->{$subject_genome}
