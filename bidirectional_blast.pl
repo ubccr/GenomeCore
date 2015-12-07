@@ -685,7 +685,7 @@
 
 #These variables (in main) are used by printVersion()
 my $template_version_number = '1.33';
-my $software_version_number = '1.5';
+my $software_version_number = '1.6';
 
 ##
 ## Start Main
@@ -697,6 +697,7 @@ use Getopt::Long;
 #Declare & initialize variables.  Provide default values here.
 my($outfile_suffix); #Not defined so a user can overwrite the input file
 my @input_files         = ();
+my @blast_out_files     = ();
 my $current_output_file = '';
 my $help                = 0;
 my $version             = 0;
@@ -724,7 +725,6 @@ my $GetOptHash =
   {'p|blast-program=s'  => \$program,                #OPTIONAL [blastp]
    'b|blast-params=s'   => \$blast_params,           #OPTIONAL [-v 20 -b 20
                                                      # -e 100 -F F]
-   'parse-only!'        => \$parse_only,             #OPTIONAL [Off]
    'shrink-blast-output!' => \$compress_mode,        #OPTIONAL [Off]
    'skip-validity-check!' => \$skip_validity_check,  #OPTIONAL [Off]
    'skip-format!'       => \$skip_format,            #OPTIONAL [Off]
@@ -732,6 +732,9 @@ my $GetOptHash =
 				     sglob($_[1]))}, #         supplied
    '<>'                 => sub {push(@input_files,   #REQUIRED unless -i is
 				     sglob($_[0]))}, #         supplied
+   'parse-only!'        => \$parse_only,             #OPTIONAL [Off]
+   'parse-blast-file=s' => sub {push(@blast_out_files,#OPTIONAL only used when
+				     sglob($_[1]))}, # --parse-only is supplied
    'c|command-file=s'   => sub {$command_file =      #OPTIONAL [nothing]
 				  sglob($_[1])},
    'e|blast-path=s'     => \$blast_command,          #OPTIONAL [blastall]
@@ -790,10 +793,16 @@ if(!isStandardInputFromTerminal())
 	       "output file will be named STDIN$outfile_suffix")}
   }
 
+if(scalar(@blast_out_files) && !$parse_only)
+  {
+    warning("Turning on --parse-only since --parse-blast-files was supplied");
+    $parse_only = 1;
+  }
+
 #Make sure there is input
 if(scalar(@input_files) == 0)
   {
-    error("No input files detected.");
+    error("No input fasta files detected.");
     usage(1);
     exit(2);
   }
@@ -1069,8 +1078,19 @@ while(GetNextCombo($combo_array,2,scalar(@input_files)))
 
 if($command_file eq '')
   {
-    foreach my $blast_result_file (keys(%$blast_result_files))
+    foreach my $blast_result_file (scalar(@blast_out_files) ?
+				   @blast_out_files :
+				   keys(%$blast_result_files))
       {
+	if(scalar(@blast_out_files) &&
+	   !exists($blast_result_files->{$blast_result_file}))
+	  {
+	    error("The supplied blast output file: [$blast_result_file] does ",
+		  "not appear to have been created by this script given the ",
+		  "input fasta files supplied.  Unable to process this file.");
+	    next;
+	  }
+
 	#Open the input file
 	if(!open(INPUT,$blast_result_file))
 	  {
@@ -1441,11 +1461,21 @@ end_print
      --parse-only         OPTIONAL [Off] Supplying this option will cause blast
                                    and formatdb to not run, but will still
                                    parse the output files.  This is meant to be
-                                   used if you have run this script once before
-                                   already and want to generate a hit table
-                                   using a subset of input files.  You still
-                                   supply the fasta files as input and the
-                                   blast file names will be reconstructed.
+                                   used if you previously ran with the -c
+                                   option and want to parse the blast result
+                                   files to generate a hit table, or if you
+                                   want to parse a subset of input files for a
+                                   smaller venn diagram.  You still supply the
+                                   fasta files as input and the blast file
+                                   names will be reconstructed, or you may
+                                   supply a set of --parse-blast-files to
+                                   restrict the parsing.
+     --parse-blast-files  OPTIONAL [none] Blast output files previously
+                                   generated (and named) by this script.
+                                   Supplying this option will automatically
+                                   turn on --parse-only mode.  Fasta input
+                                   files must also be supplied since their
+                                   names are included in the output hit table.
      --shrink-blast-      OPTIONAL [Off] This flag will cause the blastall
        output                      output to be filtered to contain only the
                                    lines necessary for creating the output
